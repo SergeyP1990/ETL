@@ -1,0 +1,15 @@
+[pg_database]
+name="mv_db_test"
+user="postgres"
+password="postgres"
+address="127.0.0.1"
+port=5433
+
+[elastic]
+address="127.0.0.1"
+port=9200
+
+[backoff]
+start_sleep_time=0.1
+factor=2
+border_sleep_time=10
