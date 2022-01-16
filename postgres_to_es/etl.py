@@ -36,46 +36,63 @@ def backoff(start_sleep_time=0.1, factor=2, border_sleep_time=10):
     return func_wrapper
 
 
-@contextmanager
-def postgres_connect(connection_opts: dict):
-    pg_connect = psycopg2.connect(**connection_opts, cursor_factory=DictCursor)
-    try:
-        yield pg_connect
-    except psycopg2.Error as err:
-        logging.error(f"Error connecting to postgres: {err}")
-        return False
-    else:
-        pg_connect.commit()
-    finally:
-        pg_connect.close()
-
 class PostgresConnection:
     def __init__(self, connection_opts: dict):
         self.connection_opts = connection_opts
         self.connection = None
+        self.cursor = None
+
+    def __enter__(self):
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        print("__exit__ called")
+        self.close()
 
     @backoff()
-    def __enter__(self):
+    def connect(self):
         try:
             self.connection = psycopg2.connect(**self.connection_opts, cursor_factory=DictCursor)
-            return self.connection
+            self.cursor = self.connection.cursor()
+            return True
         except psycopg2.Error as err:
             logging.error(f"Error connecting to postgres: {err}")
             return False
 
-    def __exit__(self, *args):
+    def close(self, commit=True):
+        if commit:
+            self.connection.commit()
         self.connection.close()
 
+    def execute(self, sql_query, params=None):
+        self.cursor.execute(sql_query, params or ())
 
+    def fetchall(self):
+        return self.cursor.fetchall()
 
+    def fetchone(self):
+        return self.cursor.fetchone()
 
-
+    def query(self, sql_query, params=None):
+        self.cursor.execute(sql_query, params or ())
+        return self.fetchall()
 
 if __name__ == "__main__":
     conf = Config.parse_config("./config")
+    # conn = PostgresConnection(conf.pg_database.dict())
+    # conn.connect()
+    # print(conn.connection.cursor())
+    # cur = conn.cursor()
+
     # print(type(conf.pg_database))
     with PostgresConnection(conf.pg_database.dict()) as pg_conn:
-        print(f"CONN: {pg_conn}")
+        print(f"CONN: {pg_conn.connection}")
+        print(f"CONN: {pg_conn.cursor}")
+    print(f"CONN: {pg_conn.connection}")
+    print(f"CONN: {pg_conn.cursor}")
+    pg_conn.connect()
+    print(f"CONN: {pg_conn.connection}")
         # print("closing")
         # pg_conn.close()
         # print(f"CONN: {pg_conn}")
