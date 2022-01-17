@@ -74,12 +74,21 @@ class PostgresConnection:
     def fetchone(self):
         return self.cursor.fetchone()
 
+    @backoff()
     def query(self, sql_query, params=None):
-        self.cursor.execute(sql_query, params or ())
-        return self.fetchall()
+        try:
+            self.cursor.execute(sql_query, params or ())
+            return self.fetchall()
+        except psycopg2.OperationalError as err:
+            logging.error(f"Error connecting to postgres while query: {err}")
+            logging.error("Trying to reconnect")
+            self.connect()
+            return False
+
 
 if __name__ == "__main__":
     conf = Config.parse_config("./config")
+    logging.error("123123")
     # conn = PostgresConnection(conf.pg_database.dict())
     # conn.connect()
     # print(conn.connection.cursor())
@@ -87,12 +96,17 @@ if __name__ == "__main__":
 
     # print(type(conf.pg_database))
     with PostgresConnection(conf.pg_database.dict()) as pg_conn:
-        print(f"CONN: {pg_conn.connection}")
-        print(f"CONN: {pg_conn.cursor}")
-    print(f"CONN: {pg_conn.connection}")
-    print(f"CONN: {pg_conn.cursor}")
-    pg_conn.connect()
-    print(f"CONN: {pg_conn.connection}")
+        print(pg_conn.query("SELECT id, rating, title, description, updated_at FROM content.film_work ORDER BY updated_at LIMIT 2"))
+        time.sleep(5)
+        print("new query")
+        print("QERY2 RES:" + str(pg_conn.query("SELECT id, rating, title, description, updated_at FROM content.film_work ORDER BY updated_at LIMIT 2")))
+        print(pg_conn.connection)
+        # print(f"CONN: {pg_conn.connection}")
+        # print(f"CONN: {pg_conn.cursor}")
+    # print(f"CONN: {pg_conn.connection}")
+    # print(f"CONN: {pg_conn.cursor}")
+    # pg_conn.connect()
+    # print(f"CONN: {pg_conn.connection}")
         # print("closing")
         # pg_conn.close()
         # print(f"CONN: {pg_conn}")
