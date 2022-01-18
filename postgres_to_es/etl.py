@@ -9,7 +9,7 @@ from psycopg2 import sql
 from psycopg2.extensions import connection as _connection
 from psycopg2.extras import DictCursor
 import time
-import requests
+import sql_queries
 
 def backoff(start_sleep_time=0.1, factor=2, border_sleep_time=10):
     """
@@ -27,12 +27,12 @@ def backoff(start_sleep_time=0.1, factor=2, border_sleep_time=10):
         @wraps(func)
         def inner(*args, **kwargs):
             while True:
-                print("before call func")
+                logging.error("before call func")
                 result = func(*args, **kwargs)
-                print("after call func")
+                logging.error("after call func")
                 if result is not False:
                     return result
-                print("retry")
+                logging.error("retry")
                 time.sleep(2)
         return inner
     return func_wrapper
@@ -49,7 +49,7 @@ class PostgresConnection:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        print("__exit__ called")
+        logging.error("__exit__ called")
         self.close()
 
     @backoff()
@@ -62,9 +62,7 @@ class PostgresConnection:
             logging.error(f"Error connecting to postgres: {err}")
             return False
 
-    def close(self, commit=True):
-        if commit:
-            self.connection.commit()
+    def close(self):
         self.connection.close()
 
     def execute(self, sql_query, params=None):
@@ -87,86 +85,97 @@ class PostgresConnection:
             self.connect()
             return False
 
-class FilmworkExtractor:
-    def __init__(self, limit=10):
-        # self.last_updated_at = datetime.datetime.strptime()
-        self.limit_literal = sql.Literal(limit)
-        self.full_sql_query = sql.SQL(
-        """
-            SELECT
-                fw.id as fw_id,
-                fw.rating as imbd_rating,
-                fw.title,
-                fw.description,
-                fw.updated_at,
-                ARRAY_AGG(DISTINCT g.name ) AS "genres",
-                ARRAY_AGG(DISTINCT p."full_name" ) FILTER (WHERE pfw."role" = 'director') AS "director",
-                ARRAY_AGG(DISTINCT p."full_name" ) FILTER (WHERE pfw."role" = 'actor') AS "actors_names",
-                ARRAY_AGG(DISTINCT p."full_name" ) FILTER (WHERE pfw."role" = 'writer') AS "writers_names",
-                JSON_AGG(DISTINCT jsonb_build_object('id', p.id, 'name', p.full_name)) FILTER (WHERE pfw.role = 'actor') AS actors,
-                JSON_AGG(DISTINCT jsonb_build_object('id', p.id, 'name', p.full_name)) FILTER (WHERE pfw.role = 'writer') AS writers
-            FROM content.film_work fw
-            LEFT JOIN content.person_film_work pfw ON pfw.film_work_id = fw.id
-            LEFT JOIN content.person p ON p.id = pfw.person_id
-            LEFT JOIN content.genre_film_work gfw ON gfw.film_work_id = fw.id
-            LEFT JOIN content.genre g ON g.id = gfw.genre_id
-            GROUP BY fw_id, fw.updated_at
-            ORDER BY fw.updated_at
-            LIMIT {sql_limit};
-        """
-        )
+class PostgresDataExtractor:
+    def __init__(self, pg_connection: PostgresConnection, limit=10):
+        self.pg_connection = pg_connection
+        self.last_updated_at = datetime.datetime
+        self.last_related_updated_at = datetime.datetime
+        self.limit = limit
 
-        self.persons_sql_query = sql.SQL(
-        """
-            SELECT
-                fw.id as fw_id,
-                JSON_AGG(DISTINCT jsonb_build_object('id', p.id, 'name', p.full_name)) FILTER (WHERE pfw.role = 'director') AS director,
-                JSON_AGG(DISTINCT jsonb_build_object('id', p.id, 'name', p.full_name)) FILTER (WHERE pfw.role = 'actor') AS actors,
-                JSON_AGG(DISTINCT jsonb_build_object('id', p.id, 'name', p.full_name)) FILTER (WHERE pfw.role = 'writer') AS writers
-            FROM content.film_work fw
-            LEFT JOIN content.person_film_work pfw ON pfw.film_work_id = fw.id
-            LEFT JOIN content.person p ON p.id = pfw.person_id
-            WHERE fw.id IN ({filmwork_ids})
-            GROUP BY fw_id;
-        """
-        )
+        self.data_name = None
+        self.dispatcher = {
+            'person': {'related_table':'person_film_work', 'id_name': 'person_id'},
+            'genre': {'related_table':'genre_film_work', 'id_name': 'genre_id'},
+        }
 
-        self.genres_sql_query = sql.SQL(
-        """
-            SELECT
-                fw.id as fw_id,
-                ARRAY_AGG(DISTINCT g.name ) AS "genres"
-            FROM content.film_work fw
-            LEFT JOIN content.genre_film_work gfw ON gfw.film_work_id = fw.id
-            LEFT JOIN content.genre g ON g.id = gfw.genre_id
-            WHERE fw.id IN ({filmwork_ids})
-            GROUP BY fw_id;
-        """
-        )
+    def extract_filmorks(self, last_updated_at: datetime.datetime):
+        # self.last_updated_at = last_updated_at
+        return self.pg_connection.query(sql_queries.fw_full_sql_query(
+            sql_limit=self.limit,
+            updated_at=last_updated_at))
 
-    def extract_filmorks(self, pg_connection: PostgresConnection):
-        # pg_connection.query(self.full_sql_query.format(sql_limit=self.limit_literal, sql_updated_at))
-        pass
+    def extract_fw_helper(self, data_name: str, fw_ids: set):
+        if data_name == "person":
+            return self.pg_connection.query(sql_queries.fw_persons_sql_query(fw_ids))
+        elif data_name == "genre":
+            return self.pg_connection.query(sql_queries.fw_genres_sql_query(fw_ids))
+        else:
+            raise ValueError
 
+
+    def pre_extract(self, data_name: str, last_updated_at: datetime.datetime):
+        self.data_name = data_name
+        return self.pg_connection.query(sql_queries.nested_pre_sql(
+            table=data_name,
+            updated_at=last_updated_at,
+            limit=self.limit
+        ))
+
+    def ids_extract(self, data_ids: set, related_updated_at: datetime.datetime):
+        return self.pg_connection.query(sql_queries.nested_fw_ids_sql(
+            related_table = self.dispatcher[self.data_name]['related_table'],
+            related_id = self.dispatcher[self.data_name]['id_name'],
+            data_name_ids = data_ids,
+            updated_at_rfw = related_updated_at,
+            limit=self.limit
+        ))
 
 
 if __name__ == "__main__":
     conf = Config.parse_config("./config")
     logging.error("123123")
-    # conn = PostgresConnection(conf.pg_database.dict())
-    # conn.connect()
-    # print(conn.connection.cursor())
-    # cur = conn.cursor()
 
-    # print(type(conf.pg_database))
+
     with PostgresConnection(conf.pg_database.dict()) as pg_conn:
-        # print(pg_conn.query("SELECT id, rating, title, description, updated_at FROM content.film_work ORDER BY updated_at LIMIT 2"))
-        # q = sql.SQL("SELECT id, rating, title, description, updated_at FROM content.film_work ORDER BY updated_at ")
-        a = FilmworkExtractor(limit=1)
-        l = a.full_sql_query.format(sql_limit=sql.Literal(2))
+        dt = datetime.datetime.fromtimestamp(0)
+        # dt = datetime.datetime.strptime("2021-06-16 20:14:09.222016 +00:00", "%Y-%m-%d %H:%M:%S.%f %z")
+        # dt2 = datetime.datetime.strptime("2021-06-16 20:14:09.222016 +00:00", "%Y-%m-%d %H:%M:%S.%f %z")
+        a = PostgresDataExtractor(pg_conn, limit=10)
+        # while True:
+        #     ans = a.extract_filmorks(dt)
+        #     if len(ans) == 0:
+        #         break
+        #     for i in ans:
+        #         print(i['title'])
+        #         dt = i['updated_at']
+        #     print("------------")
+        #
+        # exit(0)
 
-        ans = pg_conn.query(l)
-        print(ans[0][4])
+        # b = NestedExtractor(10, a)
+        ans = a.pre_extract('person',dt)
+        print(ans)
+        set_of_ids = set(data['id'] for data in ans)
+        ans2 = a.ids_extract(set_of_ids, dt)
+        print(ans2)
+        set_of_ids = set(data['id'] for data in ans2)
+        set_of_ids.pop()
+        ans3 = a.extract_fw_helper("person", set_of_ids)
+        # print(ans3[0]['fw_id'])
+        print(ans3[0]['fw_id'])
+        print(ans3[0]['director'])
+        print(ans3[0]['actors'])
+        print(ans3[0]['writers'])
+
+        # print(ans3[1]['fw_id'])
+        # print(ans3[1]['director'])
+        # print(ans3[1]['actors'])
+        # print(ans3[1]['writers'])
+        # dt = datetime.datetime.fromtimestamp(0)
+
+
+            # exit()
+
         # print(pg_conn.query(l))
 
         # time.sleep(5)
@@ -175,20 +184,4 @@ if __name__ == "__main__":
         # print(pg_conn.connection)
         # print(f"CONN: {pg_conn.connection}")
         # print(f"CONN: {pg_conn.cursor}")
-    # print(f"CONN: {pg_conn.connection}")
-    # print(f"CONN: {pg_conn.cursor}")
-    # pg_conn.connect()
-    # print(f"CONN: {pg_conn.connection}")
-        # print("closing")
-        # pg_conn.close()
-        # print(f"CONN: {pg_conn}")
-        # cur = pg_conn.cursor()
-        # while True:
-        #     print("---------------------------")
-        #     try:
-        #         cur.execute("SELECT * FROM content.film_work LIMIT 2")
-        #         print(cur.fetchall())
-        #     except psycopg2.OperationalError as Err:
-        #         print(f"ERROR: {Err}")
-        #     time.sleep(3)
-    # test_func()
+
