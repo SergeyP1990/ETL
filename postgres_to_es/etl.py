@@ -1,3 +1,5 @@
+import datetime
+
 from config import Config
 from contextlib import contextmanager
 import psycopg2
@@ -85,6 +87,68 @@ class PostgresConnection:
             self.connect()
             return False
 
+class FilmworkExtractor:
+    def __init__(self, limit=10):
+        # self.last_updated_at = datetime.datetime.strptime()
+        self.limit_literal = sql.Literal(limit)
+        self.full_sql_query = sql.SQL(
+        """
+            SELECT
+                fw.id as fw_id,
+                fw.rating as imbd_rating,
+                fw.title,
+                fw.description,
+                fw.updated_at,
+                ARRAY_AGG(DISTINCT g.name ) AS "genres",
+                ARRAY_AGG(DISTINCT p."full_name" ) FILTER (WHERE pfw."role" = 'director') AS "director",
+                ARRAY_AGG(DISTINCT p."full_name" ) FILTER (WHERE pfw."role" = 'actor') AS "actors_names",
+                ARRAY_AGG(DISTINCT p."full_name" ) FILTER (WHERE pfw."role" = 'writer') AS "writers_names",
+                JSON_AGG(DISTINCT jsonb_build_object('id', p.id, 'name', p.full_name)) FILTER (WHERE pfw.role = 'actor') AS actors,
+                JSON_AGG(DISTINCT jsonb_build_object('id', p.id, 'name', p.full_name)) FILTER (WHERE pfw.role = 'writer') AS writers
+            FROM content.film_work fw
+            LEFT JOIN content.person_film_work pfw ON pfw.film_work_id = fw.id
+            LEFT JOIN content.person p ON p.id = pfw.person_id
+            LEFT JOIN content.genre_film_work gfw ON gfw.film_work_id = fw.id
+            LEFT JOIN content.genre g ON g.id = gfw.genre_id
+            GROUP BY fw_id, fw.updated_at
+            ORDER BY fw.updated_at
+            LIMIT {sql_limit};
+        """
+        )
+
+        self.persons_sql_query = sql.SQL(
+        """
+            SELECT
+                fw.id as fw_id,
+                JSON_AGG(DISTINCT jsonb_build_object('id', p.id, 'name', p.full_name)) FILTER (WHERE pfw.role = 'director') AS director,
+                JSON_AGG(DISTINCT jsonb_build_object('id', p.id, 'name', p.full_name)) FILTER (WHERE pfw.role = 'actor') AS actors,
+                JSON_AGG(DISTINCT jsonb_build_object('id', p.id, 'name', p.full_name)) FILTER (WHERE pfw.role = 'writer') AS writers
+            FROM content.film_work fw
+            LEFT JOIN content.person_film_work pfw ON pfw.film_work_id = fw.id
+            LEFT JOIN content.person p ON p.id = pfw.person_id
+            WHERE fw.id IN ({filmwork_ids})
+            GROUP BY fw_id;
+        """
+        )
+
+        self.genres_sql_query = sql.SQL(
+        """
+            SELECT
+                fw.id as fw_id,
+                ARRAY_AGG(DISTINCT g.name ) AS "genres"
+            FROM content.film_work fw
+            LEFT JOIN content.genre_film_work gfw ON gfw.film_work_id = fw.id
+            LEFT JOIN content.genre g ON g.id = gfw.genre_id
+            WHERE fw.id IN ({filmwork_ids})
+            GROUP BY fw_id;
+        """
+        )
+
+    def extract_filmorks(self, pg_connection: PostgresConnection):
+        # pg_connection.query(self.full_sql_query.format(sql_limit=self.limit_literal, sql_updated_at))
+        pass
+
+
 
 if __name__ == "__main__":
     conf = Config.parse_config("./config")
@@ -96,11 +160,19 @@ if __name__ == "__main__":
 
     # print(type(conf.pg_database))
     with PostgresConnection(conf.pg_database.dict()) as pg_conn:
-        print(pg_conn.query("SELECT id, rating, title, description, updated_at FROM content.film_work ORDER BY updated_at LIMIT 2"))
-        time.sleep(5)
-        print("new query")
-        print("QERY2 RES:" + str(pg_conn.query("SELECT id, rating, title, description, updated_at FROM content.film_work ORDER BY updated_at LIMIT 2")))
-        print(pg_conn.connection)
+        # print(pg_conn.query("SELECT id, rating, title, description, updated_at FROM content.film_work ORDER BY updated_at LIMIT 2"))
+        # q = sql.SQL("SELECT id, rating, title, description, updated_at FROM content.film_work ORDER BY updated_at ")
+        a = FilmworkExtractor(limit=1)
+        l = a.full_sql_query.format(sql_limit=sql.Literal(2))
+
+        ans = pg_conn.query(l)
+        print(ans[0][4])
+        # print(pg_conn.query(l))
+
+        # time.sleep(5)
+        # print("new query")
+        # print("QERY2 RES:" + str(pg_conn.query("SELECT id, rating, title, description, updated_at FROM content.film_work ORDER BY updated_at LIMIT 2")))
+        # print(pg_conn.connection)
         # print(f"CONN: {pg_conn.connection}")
         # print(f"CONN: {pg_conn.cursor}")
     # print(f"CONN: {pg_conn.connection}")
