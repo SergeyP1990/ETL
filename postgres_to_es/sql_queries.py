@@ -7,7 +7,7 @@ def fw_full_sql_query(updated_at: datetime.datetime, sql_limit: int):
         """
         SELECT
             fw.id as fw_id,
-            fw.rating as imbd_rating,
+            fw.rating as imdb_rating,
             fw.title,
             fw.description,
             fw.updated_at,
