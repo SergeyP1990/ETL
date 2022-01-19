@@ -38,6 +38,15 @@ class Person(BaseRecord, NotNullChecker):
     def __post_init__(self, table_name: str):
         self._check_not_null_(("full_name",))
 
+@dataclass
+class FilmWorkPersons(BaseRecord, NotNullChecker):
+    fw_id: uuid.UUID = field(default_factory=uuid.uuid4)
+    director: list = field(default_factory=list)
+    actors_names: List = field(default_factory=list)
+    writers_names: List = field(default_factory=list)
+    actors: List = field(default_factory=list)
+    writers: List = field(default_factory=list)
+
 
 @dataclass
 class FilmWork(BaseRecord, NotNullChecker):

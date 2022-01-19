@@ -1,5 +1,5 @@
 [pg_database]
-dbname="mv_db_test"
+dbname="mv_db"
 user="postgres"
 password="postgres"
 host="127.0.0.1"

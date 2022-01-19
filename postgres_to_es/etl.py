@@ -1,5 +1,5 @@
 import datetime
-from data_representation import Person, FilmWork, Genre, BaseRecord
+from data_representation import FilmWork, BaseRecord, FilmWorkPersons
 from config import Config
 from contextlib import contextmanager
 import psycopg2
@@ -27,9 +27,9 @@ def backoff(start_sleep_time=0.1, factor=2, border_sleep_time=10):
         @wraps(func)
         def inner(*args, **kwargs):
             while True:
-                logging.error("before call func: {}".format(func.__name__))
+                # logging.error("before call func: {}".format(func.__name__))
                 result = func(*args, **kwargs)
-                logging.error("after call func")
+                # logging.error("after call func")
                 if result is not False:
                     return result
                 logging.error("retry")
@@ -91,37 +91,44 @@ class PostgresDataExtractor:
         self.last_updated_at = None
         self.last_related_updated_at = None
         self.limit = limit
+        self.merger_limit = 100
         self.data_ids = list
 
         self.data_name = None
         self.dispatcher = {
-            'person': {'related_table':'person_film_work', 'id_name': 'person_id', 'dataclass': Person},
-            'genre': {'related_table':'genre_film_work', 'id_name': 'genre_id', 'dataclass': Genre},
+            'person': {'related_table':'person_film_work', 'id_name': 'person_id'},
+            'genre': {'related_table':'genre_film_work', 'id_name': 'genre_id'},
         }
+
+    def extract(self, sql_query, data_class):
+        raw_data = self.pg_connection.query(sql_query)
+        dataclasses_data = [ data_class(**row) for row in raw_data ]
+        return dataclasses_data
 
     def extract_filmorks(self, last_updated_at: datetime.datetime):
         self.last_updated_at = last_updated_at
         while True:
-            raw_data = self.pg_connection.query(sql_queries.fw_full_sql_query(
+            sql_query = sql_queries.fw_full_sql_query(
                 sql_limit=self.limit,
                 updated_at=self.last_updated_at)
-            )
-            if len(raw_data) == 0:
+            result = self.extract(sql_query, FilmWork)
+            if len(result) == 0:
                 break
-            dataclasses_data = [ FilmWork(**row) for row in raw_data ]
-            print(f"RAW_DATA: {dataclasses_data}")
-
-            self.last_updated_at = dataclasses_data[-1].updated_at
-            yield dataclasses_data
+            self.last_updated_at = result[-1].updated_at
+            yield result
 
 
-    def extract_fw_helper(self, data_name: str, fw_ids: set):
-        if data_name == "person":
-            return self.pg_connection.query(sql_queries.fw_persons_sql_query(fw_ids))
-        elif data_name == "genre":
-            return self.pg_connection.query(sql_queries.fw_genres_sql_query(fw_ids))
+
+
+    def extract_fw_helper(self, fw_ids: set):
+        if self.data_name == "person":
+            sql_query = sql_queries.fw_persons_sql_query(fw_ids)
+        elif self.data_name == "genre":
+            sql_query = sql_queries.fw_genres_sql_query(fw_ids)
         else:
             raise ValueError
+
+        return self.extract(sql_query, FilmWorkPersons)
 
     def nested_pre_extract(self):
         while True:
@@ -153,31 +160,32 @@ class PostgresDataExtractor:
             yield data_second
 
     def nested_extractor(self, data_name: str, last_updated_at: datetime.datetime, related_updated_at: datetime.datetime):
+
         self.data_name = data_name
         self.last_updated_at = last_updated_at
         self.last_related_updated_at = related_updated_at
 
         first_result = self.nested_pre_extract()
         fw_ids = set()
+        c=0
         for first in first_result:
             first_ids = [rows.id for rows in first]
             print(f"LAST_UPD: {self.last_updated_at}")
-            print(first_ids)
+            # print(first_ids)
             second_result = self.nested_ids_extract(first_ids)
             for second in second_result:
-                for i in second:
-                    # print(type(i))
-                    if i.id == 'e2ab06fa-5ea8-4e99-b632-1d83b2577394':
-                        print("FOUND IT!")
-                        exit(0)
-                print(f"LAST_UPD_RELATED: {self.last_related_updated_at}")
+                # print(f"LAST_UPD_RELATED: {self.last_related_updated_at}")
                 # print(f"SECOND: {second}")
                 inter_set = {record.id for record in second}
                 # # print(inter_set)
                 fw_ids = fw_ids.union(inter_set)
-                print(f"LEN SET: {len(fw_ids)}")
+                c = c + len(fw_ids)
+                if len(fw_ids) >= self.merger_limit:
+                    print(f"LEN SET: {len(fw_ids)}")
+                    # print(self.extract_fw_helper(fw_ids))
+                    yield self.extract_fw_helper(fw_ids)
+                    fw_ids.clear()
             self.last_related_updated_at = datetime.datetime.fromtimestamp(0)
-        print(fw_ids)
         # self.pg_connection.query("SELECT film_work_id as fw_id FROM content.genre_film_work WHERE fw_id NOT IN ")
                 # print("second loop")
             #     print(second)
@@ -193,20 +201,24 @@ if __name__ == "__main__":
 
     with PostgresConnection(conf.pg_database.dict()) as pg_conn:
         dt = datetime.datetime.fromtimestamp(0)
-        # dt = datetime.datetime.strptime("2021-06-16 20:14:09.222016 +00:00", "%Y-%m-%d %H:%M:%S.%f %z")
+        # dt = datetime.datetime.strptime("2020-06-16 20:14:09.222016 +00:00", "%Y-%m-%d %H:%M:%S.%f %z")
         # dt2 = datetime.datetime.strptime("2021-06-16 20:14:09.222016 +00:00", "%Y-%m-%d %H:%M:%S.%f %z")
         a = PostgresDataExtractor(pg_conn, limit=10)
 
-        # a.nested_extractor("genre", dt, dt)
-        fws = a.extract_filmorks(dt)
+        fw_persons = a.nested_extractor("person", dt, dt)
+        for fw_id in fw_persons:
+            print("----")
+            print(fw_id)
+        # fws = a.extract_filmorks(dt)
         # # print(len(fws))
-        c = 0
-        for i in fws:
-            print(a.last_updated_at)
-            print(i)
-            c = c + len(i)
-            print(c)
-        print(a.last_updated_at)
+        # c = 0
+        # for i in fws:
+        #     print(a.last_updated_at)
+        #     print(i[-1].title)
+            # exit(0)
+            # c = c + len(i)
+            # print(c)
+        # print(a.last_updated_at)
         #     print([t.writers for t in i])
             # exit(0)
         # while True:
