@@ -1,3 +1,4 @@
+import dataclasses
 import datetime
 from data_representation import FilmWork, BaseRecord, FilmWorkPersons
 from config import Config
@@ -77,7 +78,14 @@ class PostgresConnection:
     @backoff()
     def query(self, sql_query, params=None):
         try:
+            # from psycopg2 import sql
+            # print(sql_query.as_string(self.cursor))
+            # exit(0)
+            # logging.error(params)
+
             self.cursor.execute(sql_query, params or ())
+            # print(self.cursor.query)
+
             return self.fetchall()
         except psycopg2.OperationalError as err:
             logging.error(f"Error connecting to postgres while query: {err}")
@@ -105,17 +113,17 @@ class PostgresDataExtractor:
         dataclasses_data = [ data_class(**row) for row in raw_data ]
         return dataclasses_data
 
-    def extract_filmorks(self, last_updated_at: datetime.datetime):
-        self.last_updated_at = last_updated_at
-        while True:
-            sql_query = sql_queries.fw_full_sql_query(
-                sql_limit=self.limit,
-                updated_at=self.last_updated_at)
-            result = self.extract(sql_query, FilmWork)
-            if len(result) == 0:
-                break
-            self.last_updated_at = result[-1].updated_at
-            yield result
+    # def extract_filmorks(self, last_updated_at: datetime.datetime):
+    #     self.last_updated_at = last_updated_at
+    #     while True:
+    #         sql_query = sql_queries.fw_full_sql_query(
+    #             sql_limit=self.limit,
+    #             updated_at=self.last_updated_at)
+    #         result = self.extract(sql_query, FilmWork)
+    #         if len(result) == 0:
+    #             break
+    #         self.last_updated_at = result[-1].updated_at
+    #         yield result
 
 
 
@@ -167,7 +175,7 @@ class PostgresDataExtractor:
 
         first_result = self.nested_pre_extract()
         fw_ids = set()
-        c=0
+        c = 0
         for first in first_result:
             first_ids = [rows.id for rows in first]
             print(f"LAST_UPD: {self.last_updated_at}")
@@ -193,6 +201,65 @@ class PostgresDataExtractor:
 
 
 
+class Producer:
+    def __init__(self, pg_connection: PostgresConnection, limit=10, sql_query = None, sql_values: dict = None,
+                 data_class: dataclasses.dataclass = BaseRecord):
+        self.pg_connection = pg_connection
+        self.sql_query = sql_query
+        self.sql_values = sql_values
+        self.data_class = data_class
+
+    def extract(self):
+        raw_data = self.pg_connection.query(self.sql_query, self.sql_values)
+        dataclasses_data = [ self.data_class(**row) for row in raw_data ]
+        return dataclasses_data
+
+    def generator(self):
+        # self.marker = marker
+        while True:
+            # sql_query = sql_queries.fw_full_sql_query()
+            result = self.extract()
+            if len(result) == 0:
+                break
+            # self.last_updated_at = result[-1].updated_at
+            yield result
+
+    def set_sql_values(self, values: dict):
+        self.sql_values = values
+
+    def update_sql_value(self, key: str, value: any):
+        self.sql_values[key] = value
+
+class Enricher(Producer):
+    def __init__(self, pg_connection: PostgresConnection, producer: Producer, **kwargs):
+        self.producer = producer
+        super().__init__(pg_connection, **kwargs)
+
+    def extract(self):
+        raw_data = self.pg_connection.query(self.sql_query, self.sql_values)
+        dataclasses_data = [ self.data_class(**row) for row in raw_data ]
+        return dataclasses_data
+
+    def generator(self):
+        for pr in self.producer.generator():
+            print('Producer in enricher worked')
+            print(f"LAST PRODUCED UPD: {pr[-1].updated_at}")
+            produced_data = [getattr(rows, 'id') for rows in pr]
+
+            self.producer.update_sql_value('updated_at', getattr(pr[-1], 'updated_at'))
+            while True:
+                self.update_sql_value('data_ids', tuple(produced_data))
+                # sql_query = sql_queries.fw_full_sql_query()
+                result = self.extract()
+                print(f"ENRICHER OFFSET: {self.sql_values['offset']}")
+                if len(result) == 0:
+                    break
+                # self.last_updated_at = result[-1].updated_at
+                yield result
+            self.update_sql_value('offset', 0)
+
+
+
 
 if __name__ == "__main__":
     conf = Config.parse_config("./config")
@@ -201,20 +268,51 @@ if __name__ == "__main__":
 
     with PostgresConnection(conf.pg_database.dict()) as pg_conn:
         dt = datetime.datetime.fromtimestamp(0)
+
         # dt = datetime.datetime.strptime("2020-06-16 20:14:09.222016 +00:00", "%Y-%m-%d %H:%M:%S.%f %z")
         # dt2 = datetime.datetime.strptime("2021-06-16 20:14:09.222016 +00:00", "%Y-%m-%d %H:%M:%S.%f %z")
-        a = PostgresDataExtractor(pg_conn, limit=10)
+        # a = PostgresDataExtractor(pg_conn, limit=10)
 
-        fw_persons = a.nested_extractor("person", dt, dt)
-        for fw_id in fw_persons:
-            print("----")
-            print(fw_id)
+        # ---- fw producer ----
+        # a = Producer(pg_conn, sql_query=sql_queries.fw_full_sql_query(),
+        #              sql_values={'updated_at': dt, 'sql_limit': 10}, data_class=FilmWork)
+        # ---- producer then enricher (person) ----
+        # offset = 0
+        # a = Producer(pg_conn, sql_query=sql_queries.nested_pre_sql('person'),
+        #               sql_values={'updated_at': dt, 'limit': 10})
+        # b = Enricher(pg_conn, a, sql_query=sql_queries.nested_fw_ids_sql('person_film_work', 'person_id'),
+        #              sql_values={'offset': offset, 'limit': 10})
+        # ---- producer then enricher (genre) ----
+        offset = 0
+        a = Producer(pg_conn, sql_query=sql_queries.nested_pre_sql('genre'),
+                      sql_values={'updated_at': dt, 'limit': 100})
+        b = Enricher(pg_conn, a, sql_query=sql_queries.nested_fw_ids_sql('genre_film_work', 'genre_id'),
+                     sql_values={'offset': offset, 'limit': 100})
+
+
+        # fws = a.generator()
+        # fw_persons = a.nested_extractor("person", dt, dt)
+        s = set()
+        for fw_objects in b.generator():
+        #     print("----")
+            ps = {el.id for el in fw_objects}
+            print(len(ps))
+            s = s.union(ps)
+            # print({el.id for el in fw_objects})
+            print(fw_objects)
+            # print(s)
+            new_offset = b.sql_values['offset'] + b.sql_values['limit']
+            b.update_sql_value('offset', new_offset)
+            # b.update_sql_value('updated_at_rfw', fw_objects[-1].updated_at)
+        print(len(s))
         # fws = a.extract_filmorks(dt)
         # # print(len(fws))
         # c = 0
-        # for i in fws:
-        #     print(a.last_updated_at)
-        #     print(i[-1].title)
+        # for i in a.generator():
+            # print(i.id)
+            # print(i[-1].title)
+            # a.update_sql_value('updated_at', i[-1].updated_at)
+
             # exit(0)
             # c = c + len(i)
             # print(c)

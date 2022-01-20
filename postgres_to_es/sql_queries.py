@@ -2,7 +2,7 @@ import datetime
 
 from psycopg2 import sql
 
-def fw_full_sql_query(updated_at: datetime.datetime, sql_limit: int):
+def fw_full_sql_query():
     return sql.SQL(
         """
         SELECT
@@ -27,7 +27,7 @@ def fw_full_sql_query(updated_at: datetime.datetime, sql_limit: int):
         ORDER BY fw.updated_at
         LIMIT {sql_limit};
         """
-    ).format(updated_at=sql.Literal(updated_at),sql_limit=sql.Literal(sql_limit))
+    ).format(updated_at=sql.Placeholder(name="updated_at"), sql_limit=sql.Placeholder(name="sql_limit"))
 
 def fw_persons_sql_query(filmwork_ids: set):
     return sql.SQL(
@@ -49,7 +49,7 @@ def fw_persons_sql_query(filmwork_ids: set):
 
 def fw_genres_sql_query(filmwork_ids: set):
     sql.SQL(
-    """
+        """
         SELECT
             fw.id as fw_id,
             ARRAY_AGG(DISTINCT g.name ) AS "genres"
@@ -59,9 +59,9 @@ def fw_genres_sql_query(filmwork_ids: set):
         WHERE fw.id IN ({filmwork_ids})
         GROUP BY fw_id;
         """
-    ).format(filmwork_ids=sql.SQL(", ").join(map(sql.Literal, filmwork_ids)))
+    ).format(filmwork_ids=sql.SQL(", ").join(map(sql.Placeholder, filmwork_ids)))
 
-def nested_pre_sql(table: str, updated_at: datetime.datetime, limit: int):
+def nested_pre_sql(table: str):
     return sql.SQL(
         """
         SELECT id, updated_at
@@ -71,23 +71,23 @@ def nested_pre_sql(table: str, updated_at: datetime.datetime, limit: int):
         LIMIT {limit};
     """
     ).format(table=sql.Identifier(table),
-            updated_at=sql.Literal(updated_at),
-            limit=sql.Literal(limit))
+            updated_at=sql.Placeholder(name='updated_at'),
+            limit=sql.Placeholder(name='limit'))
 
-def nested_fw_ids_sql(related_table: str, related_id: str, data_name_ids: set,
-                      updated_at_rfw: datetime.datetime, limit: int):
+def nested_fw_ids_sql(related_table: str, related_id: str):
     return sql.SQL(
     """
     SELECT fw.id, fw.updated_at
     FROM content.film_work fw
     LEFT JOIN content.{related_table} rfw ON rfw.film_work_id = fw.id
-    WHERE rfw.{related_id} IN ({data_name_ids}) AND fw.updated_at > {updated_at_rfw}
+    WHERE rfw.{related_id} IN {data_name_ids}
     ORDER BY fw.updated_at
-    LIMIT {limit};
+    LIMIT {limit}
+    OFFSET {offset}
     """
     ).format(related_table = sql.Identifier(related_table),
             related_id = sql.Identifier(related_id),
-            data_name_ids = sql.SQL(", ").join(map(sql.Literal, data_name_ids)),
-            updated_at_rfw = sql.Literal(updated_at_rfw),
-            limit=sql.Literal(limit)
+            data_name_ids = sql.Placeholder(name="data_ids"),
+            offset = sql.Placeholder(name='offset'),
+            limit=sql.Placeholder(name='limit')
             )
