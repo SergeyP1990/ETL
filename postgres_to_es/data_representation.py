@@ -51,7 +51,7 @@ class FilmWork:
     imdb_rating: float = field(default=None)
     title: str = field(default=None)
     description: str = field(default=None)
-    genre: List = field(default_factory=list)
+    genres: List = field(default_factory=list)
     director: List = field(default_factory=list)
     actors_names: List = field(default_factory=list)
     writers_names: List = field(default_factory=list)
