@@ -1,7 +1,7 @@
-import datetime
-
 from psycopg2 import sql
 
+# Функции sql запросов возвращают SQL объекты с расставленными
+# в необходимых местах именными placeholder'ами
 def fw_full_sql_query():
     return sql.SQL(
         """
@@ -11,7 +11,7 @@ def fw_full_sql_query():
             fw.title,
             fw.description,
             fw.updated_at,
-            ARRAY_AGG(DISTINCT g.name ) AS "genre",
+            ARRAY_AGG(DISTINCT g.name ) AS "genres",
             ARRAY_AGG(DISTINCT p."full_name" ) FILTER (WHERE pfw."role" = 'director') AS "director",
             ARRAY_AGG(DISTINCT p."full_name" ) FILTER (WHERE pfw."role" = 'actor') AS "actors_names",
             ARRAY_AGG(DISTINCT p."full_name" ) FILTER (WHERE pfw."role" = 'writer') AS "writers_names",

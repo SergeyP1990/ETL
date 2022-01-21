@@ -1,15 +1,16 @@
 [pg_database]
-dbname="mv_db"
+dbname="mv_db_test"
 user="postgres"
 password="postgres"
 host="127.0.0.1"
 port=5433
+
+[sql_settings]
+limit=100
 
 [elastic]
 host="127.0.0.1"
 port=9200
 
 [backoff]
-start_sleep_time=0.1
-factor=2
-border_sleep_time=10
+max_time=60
