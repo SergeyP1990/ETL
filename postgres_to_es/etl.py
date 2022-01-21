@@ -383,7 +383,7 @@ if __name__ == "__main__":
 
     with PostgresConnection(conf.pg_database.dict()) as pg_conn:
         # Предполагается, что на момент старта скрипта необходимые index'ы уже созданы
-        esr = ElasticRequester(['127.0.0.1'], port=9200)
+        esr = ElasticRequester([conf.elastic.host], port=conf.elastic.port)
 
         # Считывание state файла. При инициализации класса State
         # отсутствующие необходимые параметры будут заполнены
