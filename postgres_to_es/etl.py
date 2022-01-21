@@ -1,8 +1,11 @@
 import datetime
 import logging
+import os
 
 import backoff
 import psycopg2
+import psycopg2.errors as psycopg2_errors
+from dotenv import load_dotenv
 from elasticsearch import Elasticsearch, helpers
 from elasticsearch import exceptions as elastic_exceptions
 from psycopg2.extras import DictCursor
@@ -36,10 +39,20 @@ class PostgresConnection:
         self.close()
 
     @backoff.on_exception(backoff.expo,
-                      psycopg2.Error,
+                      psycopg2_errors.InvalidPassword,
+                      max_tries=5,
                       max_time=conf.backoff.max_time)
     def connect(self):
-        self.connection = psycopg2.connect(**self.connection_opts, cursor_factory=DictCursor)
+        try:
+            self.connection = psycopg2.connect(**self.connection_opts, cursor_factory=DictCursor)
+        except psycopg2_errors.OperationalError as Err:
+            print(Err)
+            print(Err.pgcode)
+            print(Err.pgerror)
+            print(Err.args)
+            print(Err.diag)
+            print(Err.with_traceback)
+            exit(1)
         self.cursor = self.connection.cursor()
         return True
 
@@ -62,7 +75,12 @@ class PostgresConnection:
                 logging.error("Trying to reconnect")
                 self.connect()
 
-
+producer_settings = {
+    'sql_query': 'query',
+    'sql_params': {'name':'value'},
+    'data_wrapper': 'func',
+    'offset_function': 'func' # получает на вход список результатов
+}
 class Producer:
     """
     Класс сборщик первого уровня (Producer). Принимает на вход:
@@ -141,6 +159,13 @@ class Producer:
         словаре, который подставляется в sql запрос"""
         self.sql_values[key] = value
 
+
+enricher_settings = {
+    'sql_query': 'query',
+    'sql_params': {'name':'value'},
+    'dataclass': 'dataclass (optional)',
+    'offset_function': 'func'
+}
 class Enricher(Producer):
     """
     Класс сборщик второго уровня. Наследуется от класса сборщика первого уровня.
@@ -307,6 +332,7 @@ def fw_producer(pg_connection, elastic_requester, state, limit):
     # список dataclass'ов
     for film_work_objects in film_work_producer.generator():
 
+
         # Подготовка bulk запроса. Список с dataclass'ами передаётся в
         # ElasticRequester для форматирования
         elastic_requester.prepare_bulk(film_work_objects,'update', 'fw_id', upsert=True)
@@ -381,9 +407,15 @@ if __name__ == "__main__":
     logging.basicConfig(level='INFO')
 
 
-    with PostgresConnection(conf.pg_database.dict()) as pg_conn:
+    load_dotenv()
+    pg_dsl = conf.pg_database.dict()
+    pg_dsl['password'] = os.environ.get("DB_PASSWD")
+    pg_dsl['user'] = os.environ.get("DB_USER")
+
+    with PostgresConnection(pg_dsl) as pg_conn:
+    # with PostgresConnection(conf.pg_database.dict()) as pg_conn:
         # Предполагается, что на момент старта скрипта необходимые index'ы уже созданы
-        esr = ElasticRequester(['127.0.0.1'], port=9200)
+        esr = ElasticRequester([conf.elastic.host], port=conf.elastic.port)
 
         # Считывание state файла. При инициализации класса State
         # отсутствующие необходимые параметры будут заполнены
