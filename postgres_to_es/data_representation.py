@@ -1,46 +1,24 @@
 import datetime
 import uuid
-from dataclasses import dataclass, field, InitVar
+from dataclasses import dataclass, field
 from typing import List
-
-@dataclass
-class NotNullChecker:
-    def _check_not_null_(self, not_null_fields):
-        for not_null_field in not_null_fields:
-            if self.__dict__[not_null_field] is None:
-                raise ValueError(f"Field '{not_null_field}' violates not null constraint")
 
 
 @dataclass
 class BaseRecord:
-    id: uuid.UUID = field(default_factory=uuid.uuid4)
-    # created_at: datetime.datetime = field(default=None)
+    id: uuid.UUID = field(default=None)
     updated_at: datetime.datetime = field(default=None)
 
 
 @dataclass
-class Genre(BaseRecord, NotNullChecker):
-    name: str = field(default=None)
-    description: str = field(default=None)
-    table_name: InitVar[str] = "genre"
-
-    def __post_init__(self, table_name: str):
-        self._check_not_null_(("name",))
+class FilmWorkGenres:
+    fw_id: uuid.UUID = field(default=None)
+    genres: List = field(default_factory=list)
 
 
 @dataclass
-class Person(BaseRecord, NotNullChecker):
-    full_name: str = field(default=None)
-    birth_date: datetime.date = field(default=None)
-    updated_at: datetime.datetime = field(default=None)
-    table_name: InitVar[str] = "person"
-
-    def __post_init__(self, table_name: str):
-        self._check_not_null_(("full_name",))
-
-@dataclass
-class FilmWorkPersons(BaseRecord, NotNullChecker):
-    fw_id: uuid.UUID = field(default_factory=uuid.uuid4)
+class FilmWorkPersons:
+    fw_id: uuid.UUID = field(default=None)
     director: list = field(default_factory=list)
     actors_names: List = field(default_factory=list)
     writers_names: List = field(default_factory=list)
@@ -49,15 +27,15 @@ class FilmWorkPersons(BaseRecord, NotNullChecker):
 
 
 @dataclass
-class FilmWork(BaseRecord, NotNullChecker):
-    fw_id: uuid.UUID = field(default_factory=uuid.uuid4)
+class FilmWork:
+    fw_id: uuid.UUID = field(default=None)
     imdb_rating: float = field(default=None)
     title: str = field(default=None)
     description: str = field(default=None)
-    genres: List[Genre] = field(default_factory=list)
-    director: list = field(default_factory=list)
+    genre: List = field(default_factory=list)
+    director: List = field(default_factory=list)
     actors_names: List = field(default_factory=list)
     writers_names: List = field(default_factory=list)
     actors: List = field(default_factory=list)
     writers: List = field(default_factory=list)
-    table_name: InitVar[str] = "film_work"
+    updated_at: datetime.datetime = field(default=None)
