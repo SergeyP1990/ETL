@@ -1,5 +1,3 @@
-import logging
-import typing
 import toml
 from pydantic import BaseModel
 
@@ -10,6 +8,8 @@ class PostgresConfig(BaseModel):
     host: str
     port: int
 
+class SqlConfig(BaseModel):
+    limit: int
 
 class ElasticConfig(BaseModel):
     host: str
@@ -17,15 +17,14 @@ class ElasticConfig(BaseModel):
 
 
 class BackoffConfig(BaseModel):
-    start_sleep_time: float
-    factor: int
-    border_sleep_time: float
+    max_time: int
 
 
 class Config(BaseModel):
     pg_database: PostgresConfig
     elastic: ElasticConfig
     backoff: BackoffConfig
+    sql_settings: SqlConfig
 
     @classmethod
     def parse_config(cls, file_path):

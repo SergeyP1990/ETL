@@ -1,6 +1,6 @@
 import datetime
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import List
 
 
@@ -15,6 +15,16 @@ class FilmWorkGenres:
     fw_id: uuid.UUID = field(default=None)
     genres: List = field(default_factory=list)
 
+    def elastic_format(self):
+        di = {}
+        for model_field in fields(self):
+            f_name = model_field.name
+            if f_name == 'fw_id':
+                continue
+            if f_name == 'genres':
+                f_name = 'genre'
+            di[f_name] = getattr(self, model_field.name)
+        return di
 
 @dataclass
 class FilmWorkPersons:
@@ -24,6 +34,15 @@ class FilmWorkPersons:
     writers_names: List = field(default_factory=list)
     actors: List = field(default_factory=list)
     writers: List = field(default_factory=list)
+
+    def elastic_format(self):
+        di = {}
+        for model_field in fields(self):
+            f_name = model_field.name
+            if f_name == 'fw_id':
+                continue
+            di[f_name] = getattr(self, model_field.name)
+        return di
 
 
 @dataclass
@@ -39,3 +58,17 @@ class FilmWork:
     actors: List = field(default_factory=list)
     writers: List = field(default_factory=list)
     updated_at: datetime.datetime = field(default=None)
+
+    def elastic_format(self):
+        di = {}
+        for model_field in fields(self):
+            f_name = model_field.name
+            if f_name == 'genres':
+                f_name = 'genre'
+            if f_name == 'fw_id':
+                f_name = 'id'
+            if f_name == 'updated_at':
+                continue
+            di[f_name] = getattr(self, model_field.name)
+        return di
+
