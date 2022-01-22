@@ -20,12 +20,14 @@ from state_control import State, JsonFileStorage
 # conf должна быть глобальной для этого
 conf = Config.parse_config("./config")
 
+
 class PostgresConnection:
     """
     Класс для работы с Postgres.
     Реализует подключение, выполнение запросов. Может работать через контекстный менеджер
     Функция подключения обёрнута декоратором backoff
     """
+
     def __init__(self, connection_opts: dict):
         self.connection_opts = connection_opts
         self.connection = None
@@ -38,21 +40,16 @@ class PostgresConnection:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-    @backoff.on_exception(backoff.expo,
-                      psycopg2_errors.InvalidPassword,
-                      max_tries=5,
-                      max_time=conf.backoff.max_time)
+    @backoff.on_exception(
+        backoff.expo,
+        psycopg2_errors.OperationalError,
+        max_tries=5,
+        max_time=conf.backoff.max_time,
+    )
     def connect(self):
-        try:
-            self.connection = psycopg2.connect(**self.connection_opts, cursor_factory=DictCursor)
-        except psycopg2_errors.OperationalError as Err:
-            print(Err)
-            print(Err.pgcode)
-            print(Err.pgerror)
-            print(Err.args)
-            print(Err.diag)
-            print(Err.with_traceback)
-            exit(1)
+        self.connection = psycopg2.connect(
+            **self.connection_opts, cursor_factory=DictCursor
+        )
         self.cursor = self.connection.cursor()
         return True
 
@@ -75,12 +72,7 @@ class PostgresConnection:
                 logging.error("Trying to reconnect")
                 self.connect()
 
-producer_settings = {
-    'sql_query': 'query',
-    'sql_params': {'name':'value'},
-    'data_wrapper': 'func',
-    'offset_function': 'func' # получает на вход список результатов
-}
+
 class Producer:
     """
     Класс сборщик первого уровня (Producer). Принимает на вход:
@@ -102,8 +94,16 @@ class Producer:
        собранных FilmWork'ов
 
     """
-    def __init__(self, pg_connection: PostgresConnection, sql_query, sql_values: dict,
-                 data_class = BaseRecord, offset_by = None, produce_field = None):
+
+    def __init__(
+        self,
+        pg_connection: PostgresConnection,
+        sql_query,
+        sql_values: dict,
+        data_class=BaseRecord,
+        offset_by=None,
+        produce_field=None,
+    ):
         self.pg_connection = pg_connection
         self.sql_query = sql_query
         self.sql_values = sql_values
@@ -122,7 +122,7 @@ class Producer:
         инициализации класса
         """
         raw_data = self.pg_connection.query(self.sql_query, self.sql_values)
-        dataclasses_data = [ self.data_class(**row) for row in raw_data ]
+        dataclasses_data = [self.data_class(**row) for row in raw_data]
         return dataclasses_data
 
     def generator(self):
@@ -144,9 +144,11 @@ class Producer:
             if len(result) == 0:
                 break
             self.update_sql_value(self.offset_by, getattr(result[-1], self.offset_by))
-            self.last_upd_at = self.sql_values['updated_at']
+            self.last_upd_at = self.sql_values["updated_at"]
             if self.produce_field is not None:
-                produced_by_field = [getattr(rows, self.produce_field) for rows in result]
+                produced_by_field = [
+                    getattr(rows, self.produce_field) for rows in result
+                ]
                 yield produced_by_field
             else:
                 yield result
@@ -160,12 +162,6 @@ class Producer:
         self.sql_values[key] = value
 
 
-enricher_settings = {
-    'sql_query': 'query',
-    'sql_params': {'name':'value'},
-    'dataclass': 'dataclass (optional)',
-    'offset_function': 'func'
-}
 class Enricher(Producer):
     """
     Класс сборщик второго уровня. Наследуется от класса сборщика первого уровня.
@@ -178,6 +174,7 @@ class Enricher(Producer):
     Здесь для запросов применяется OFFSET, placeholder под который обязательно должен быть в sql
     запросе, передаваемом Enricher'у.
     """
+
     def __init__(self, *args, producer: Producer, enrich_by: str = None, **kwargs):
         self.producer = producer
         self.enrich_by = enrich_by
@@ -185,7 +182,7 @@ class Enricher(Producer):
         super().__init__(*args, **kwargs)
 
     def generator(self):
-        if self.sql_values.get('offset') is None:
+        if self.sql_values.get("offset") is None:
             raise ValueError("У enricher должен быть OFFSET")
         # Итерация по генератору из Producer.
         for pr in self.producer.generator():
@@ -202,14 +199,16 @@ class Enricher(Producer):
                 # Увеличение OFFSET для следующего запроса.
                 self.move_offset()
                 if self.produce_field is not None:
-                    enriched_by_field = [getattr(rows, self.produce_field) for rows in result]
+                    enriched_by_field = [
+                        getattr(rows, self.produce_field) for rows in result
+                    ]
                     yield enriched_by_field
                 else:
                     yield result
             # Сбор данных второго уровня по результатам пачки данных из сборщика первого уровня закончен.
             # Следовательно, необходимо сбросить offset, чтобы на следующей итерации сбор второго уровня
             # начинать сначала.
-            self.update_sql_value('offset', 0)
+            self.update_sql_value("offset", 0)
 
     def move_offset(self):
         """
@@ -217,8 +216,8 @@ class Enricher(Producer):
         Изменение заносятся в словарь, который используется для подстановки значений в sql
         запрос.
         """
-        new_offset = self.sql_values['offset'] + self.sql_values['limit']
-        self.update_sql_value('offset', new_offset)
+        new_offset = self.sql_values["offset"] + self.sql_values["limit"]
+        self.update_sql_value("offset", new_offset)
         self.offset = new_offset
 
 
@@ -240,8 +239,17 @@ class Merger(Producer):
     становится равен или больше лимита set_limit, сборщик выполняет запрос к базе данных по собранным
     данным и возвращает список результатов.
     """
-    def __init__(self, pg_connection: PostgresConnection, enricher: Enricher, sql_query, sql_values: dict,
-                 produce_by: str = None, set_limit = 100, **kwargs):
+
+    def __init__(
+        self,
+        pg_connection: PostgresConnection,
+        enricher: Enricher,
+        sql_query,
+        sql_values: dict,
+        produce_by: str = None,
+        set_limit=100,
+        **kwargs,
+    ):
         self.enricher = enricher
         self.produce_by = produce_by
         self.set_limit = set_limit
@@ -283,29 +291,28 @@ class ElasticRequester:
     Каждый dataclass должен иметь метод elastic_format, возвращающий
     словарь с именами полей, соотвествующими mapping'у индекса
     """
+
     def __init__(self, ip: list, port: int):
         self.ip = ip
         self.port = port
         self.elastic_instance = Elasticsearch(self.ip, port=self.port)
         self.bulk_request = []
 
-    def prepare_bulk(self, objects: list, action: str, id_key: str = 'id', upsert: bool = False):
+    def prepare_bulk(
+        self, objects: list, action: str, id_key: str = "id", upsert: bool = False
+    ):
         self.bulk_request.clear()
         for obj in objects:
             elastic_doc = obj.elastic_format()
             doc_id = getattr(obj, id_key)
-            req = {
-                '_op_type': action,
-                '_id': doc_id,
-                'doc': elastic_doc
-            }
+            req = {"_op_type": action, "_id": doc_id, "doc": elastic_doc}
             if upsert:
-                req['doc_as_upsert'] = True
+                req["doc_as_upsert"] = True
             self.bulk_request.append(req)
 
-    @backoff.on_exception(backoff.expo,
-                      elastic_exceptions.ConnectionError,
-                      max_time=conf.backoff.max_time)
+    @backoff.on_exception(
+        backoff.expo, elastic_exceptions.ConnectionError, max_time=conf.backoff.max_time
+    )
     def make_bulk_request(self, to_index: str):
         if len(self.bulk_request) == 0:
             logging.error("Bulk request empty")
@@ -314,33 +321,38 @@ class ElasticRequester:
         return res
 
 
-
 def fw_producer(pg_connection, elastic_requester, state, limit):
     """
     Выгрузка таблицы film_work
     """
     logging.info("Запуск выгрузки film_work")
     # Считывание updated_at из state файла
-    updated_at = state.get_state('film_work_upd_at')
+    updated_at = state.get_state("film_work_upd_at")
 
-    film_work_producer = Producer(pg_connection, sql_query=sql_queries.fw_full_sql_query(),
-                 sql_values={'updated_at': updated_at, 'sql_limit': limit}, data_class=FilmWork,
-                 offset_by='updated_at')
+    film_work_producer = Producer(
+        pg_connection,
+        sql_query=sql_queries.fw_full_sql_query(),
+        sql_values={"updated_at": updated_at, "sql_limit": limit},
+        data_class=FilmWork,
+        offset_by="updated_at",
+    )
 
     # Итерация по данным из базы
     # Загрузчик film_work_producer возвращает для работы
     # список dataclass'ов
     for film_work_objects in film_work_producer.generator():
 
-
         # Подготовка bulk запроса. Список с dataclass'ами передаётся в
         # ElasticRequester для форматирования
-        elastic_requester.prepare_bulk(film_work_objects,'update', 'fw_id', upsert=True)
-        res = elastic_requester.make_bulk_request(to_index='movies')
+        elastic_requester.prepare_bulk(
+            film_work_objects, "update", "fw_id", upsert=True
+        )
+        res = elastic_requester.make_bulk_request(to_index="movies")
         # запись в state_file последнего успешно записанного значения updated_at
-        state.set_state('film_work_upd_at', film_work_producer.last_upd_at)
+        state.set_state("film_work_upd_at", film_work_producer.last_upd_at)
 
     logging.info("Выгрузка film_work завершена")
+
 
 def persons_producer(pg_connection, elastic_requester, state, limit):
     """
@@ -348,29 +360,43 @@ def persons_producer(pg_connection, elastic_requester, state, limit):
     """
     logging.info("Запуск выгрузки persons")
 
-    updated_at = state.get_state('person_upd_at')
+    updated_at = state.get_state("person_upd_at")
 
     # Здесь создаются загрузчики трех уровней как в архитектуре ETL: producer, enricher, merger
     # для каждого загрузчика - свой sql запрос
-    person_producer = Producer(pg_connection, sql_query=sql_queries.nested_pre_sql('person'),
-                               sql_values={'updated_at': updated_at, 'limit': limit},
-                               offset_by='updated_at', produce_field='id')
-    person_enricher = Enricher(pg_connection, producer=person_producer,
-                               sql_query=sql_queries.nested_fw_ids_sql('person_film_work', 'person_id'),
-                               sql_values={'offset': 0, 'limit': limit},
-                               enrich_by='data_ids', produce_field='id')
-    person_merger = Merger(pg_connection, person_enricher, sql_query=sql_queries.fw_persons_sql_query(),
-                           sql_values={}, produce_by='filmwork_ids',
-                           set_limit=100, data_class=FilmWorkPersons)
+    person_producer = Producer(
+        pg_connection,
+        sql_query=sql_queries.nested_pre_sql("person"),
+        sql_values={"updated_at": updated_at, "limit": limit},
+        offset_by="updated_at",
+        produce_field="id",
+    )
+    person_enricher = Enricher(
+        pg_connection,
+        producer=person_producer,
+        sql_query=sql_queries.nested_fw_ids_sql("person_film_work", "person_id"),
+        sql_values={"offset": 0, "limit": limit},
+        enrich_by="data_ids",
+        produce_field="id",
+    )
+    person_merger = Merger(
+        pg_connection,
+        person_enricher,
+        sql_query=sql_queries.fw_persons_sql_query(),
+        sql_values={},
+        produce_by="filmwork_ids",
+        set_limit=100,
+        data_class=FilmWorkPersons,
+    )
 
     # В результате работы этого загрузчика, в ES отправляются только персоны, остальные данные
     # по фильму не загружаются. Если фильма не было на момент создания, то он будет создан по id, благодаря upsert,
     # но вся остальная информация в него попадёт только на момент работы функции fw_producer (которая была выше)
     for pfw_objects in person_merger.generator():
 
-        elastic_requester.prepare_bulk(pfw_objects,'update', 'fw_id', upsert=True)
-        res = elastic_requester.make_bulk_request(to_index='movies')
-        state.set_state('person_upd_at', person_producer.last_upd_at)
+        elastic_requester.prepare_bulk(pfw_objects, "update", "fw_id", upsert=True)
+        res = elastic_requester.make_bulk_request(to_index="movies")
+        state.set_state("person_upd_at", person_producer.last_upd_at)
 
     logging.info("Выгрузка person завершена")
 
@@ -381,39 +407,52 @@ def genres_producer(pg_connection, elastic_requester, state, limit):
     """
     logging.info("Запуск выгрузки genre")
     # Логика работы функции аналогична persons_producer. Различаются только sql запросы.
-    updated_at = state.get_state('genre_upd_at')
+    updated_at = state.get_state("genre_upd_at")
 
-    genre_producer = Producer(pg_connection, sql_query=sql_queries.nested_pre_sql('genre'),
-                               sql_values={'updated_at': updated_at, 'limit': limit},
-                               offset_by='updated_at', produce_field='id')
-    genre_enricher = Enricher(pg_connection, producer=genre_producer,
-                               sql_query=sql_queries.nested_fw_ids_sql('genre_film_work', 'genre_id'),
-                               sql_values={'offset': 0, 'limit': limit},
-                               enrich_by='data_ids', produce_field='id')
-    genre_merger = Merger(pg_connection, genre_enricher, sql_query=sql_queries.fw_genres_sql_query(),
-                           sql_values={}, produce_by='filmwork_ids',
-                           set_limit=100, data_class=FilmWorkGenres)
+    genre_producer = Producer(
+        pg_connection,
+        sql_query=sql_queries.nested_pre_sql("genre"),
+        sql_values={"updated_at": updated_at, "limit": limit},
+        offset_by="updated_at",
+        produce_field="id",
+    )
+    genre_enricher = Enricher(
+        pg_connection,
+        producer=genre_producer,
+        sql_query=sql_queries.nested_fw_ids_sql("genre_film_work", "genre_id"),
+        sql_values={"offset": 0, "limit": limit},
+        enrich_by="data_ids",
+        produce_field="id",
+    )
+    genre_merger = Merger(
+        pg_connection,
+        genre_enricher,
+        sql_query=sql_queries.fw_genres_sql_query(),
+        sql_values={},
+        produce_by="filmwork_ids",
+        set_limit=100,
+        data_class=FilmWorkGenres,
+    )
 
     for gfw_objects in genre_merger.generator():
 
-        elastic_requester.prepare_bulk(gfw_objects,'update', 'fw_id', upsert=True)
-        res = elastic_requester.make_bulk_request(to_index='movies')
-        state.set_state('genre_upd_at', genre_producer.last_upd_at)
+        elastic_requester.prepare_bulk(gfw_objects, "update", "fw_id", upsert=True)
+        res = elastic_requester.make_bulk_request(to_index="movies")
+        state.set_state("genre_upd_at", genre_producer.last_upd_at)
 
     logging.info("Выгрузка genre завершена")
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level='INFO')
-
+    logging.basicConfig(level="INFO")
 
     load_dotenv()
     pg_dsl = conf.pg_database.dict()
-    pg_dsl['password'] = os.environ.get("DB_PASSWD")
-    pg_dsl['user'] = os.environ.get("DB_USER")
+    pg_dsl["password"] = os.environ.get("DB_PASSWD")
+    pg_dsl["user"] = os.environ.get("DB_USER")
 
     with PostgresConnection(pg_dsl) as pg_conn:
-    # with PostgresConnection(conf.pg_database.dict()) as pg_conn:
+        # with PostgresConnection(conf.pg_database.dict()) as pg_conn:
         # Предполагается, что на момент старта скрипта необходимые index'ы уже созданы
         esr = ElasticRequester([conf.elastic.host], port=conf.elastic.port)
 
