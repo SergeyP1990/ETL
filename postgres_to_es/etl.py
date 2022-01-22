@@ -8,6 +8,7 @@ import dataclasses
 import datetime
 import logging
 import os
+import time
 from typing import Optional, Iterator, List, Tuple, Any
 
 import backoff
@@ -372,125 +373,113 @@ def fw_producer(
     logging.info("Выгрузка film_work завершена")
 
 
-def persons_producer(
+def persons_or_genres_producer(
     pg_connection: PostgresConnection,
     elastic_requester: ElasticRequester,
     state: State,
     limit: int,
+    data_type: str,
 ):
     """
-    Выгрузка таблицы person
+    Выгрузка таблицы person\genre
     """
-    logging.info("Запуск выгрузки persons")
+    dispatcher = {
+        "person": {
+            "state_field": "person_upd_at",
+            "table_name": "person",
+            "related_table": "person_film_work",
+            "related_id": "person_id",
+            "dataclass": FilmWorkPersons,
+            "sql_query": sql_queries.fw_persons_sql_query(),
+        },
+        "genre": {
+            "state_field": "genre_upd_at",
+            "table_name": "genre",
+            "related_table": "genre_film_work",
+            "related_id": "genre_id",
+            "dataclass": FilmWorkGenres,
+            "sql_query": sql_queries.fw_genres_sql_query(),
+        },
+    }
+    if dispatcher.get(data_type) is None:
+        raise ValueError(
+            f"Неизвестный тип данных в запросе! Может быть только: {dispatcher.keys()}"
+        )
 
-    updated_at = state.get_state("person_upd_at")
+    logging.info(f"Запуск выгрузки {data_type}")
+    updated_at = state.get_state(dispatcher[data_type]["state_field"])
 
     # Здесь создаются загрузчики трех уровней как в архитектуре ETL: producer, enricher, merger
     # для каждого загрузчика - свой sql запрос
-    person_producer = Producer(
+    pg_producer = Producer(
         pg_connection,
-        sql_query=sql_queries.nested_pre_sql("person"),
+        sql_query=sql_queries.nested_pre_sql(dispatcher[data_type]["table_name"]),
         sql_values={"updated_at": updated_at, "limit": limit},
         offset_by="updated_at",
         produce_field="id",
     )
-    person_enricher = Enricher(
+    pg_enricher = Enricher(
         pg_connection,
-        producer=person_producer,
-        sql_query=sql_queries.nested_fw_ids_sql("person_film_work", "person_id"),
+        producer=pg_producer,
+        sql_query=sql_queries.nested_fw_ids_sql(
+            dispatcher[data_type]["related_table"], dispatcher[data_type]["related_id"]
+        ),
         sql_values={"offset": 0, "limit": limit},
         enrich_by="data_ids",
         produce_field="id",
     )
-    person_merger = Merger(
+    pg_merger = Merger(
         pg_connection,
-        person_enricher,
-        sql_query=sql_queries.fw_persons_sql_query(),
+        pg_enricher,
+        sql_query=dispatcher[data_type]["sql_query"],
         sql_values={},
         produce_by="filmwork_ids",
         set_limit=100,
-        data_class=FilmWorkPersons,
+        data_class=dispatcher[data_type]["dataclass"],
     )
 
-    # В результате работы этого загрузчика, в ES отправляются только персоны, остальные данные
+    # В результате работы этого загрузчика, в ES отправляются только персоны\жанры, остальные данные
     # по фильму не загружаются. Если фильма не было на момент создания, то он будет создан по id, благодаря upsert,
     # но вся остальная информация в него попадёт только на момент работы функции fw_producer (которая была выше)
-    for pfw_objects in person_merger.generator():
+    for pgfw_objects in pg_merger.generator():
 
-        elastic_requester.prepare_bulk(pfw_objects, "update", "fw_id", upsert=True)
+        elastic_requester.prepare_bulk(pgfw_objects, "update", "fw_id", upsert=True)
         res = elastic_requester.make_bulk_request(to_index="movies")
-        state.set_state("person_upd_at", person_producer.last_upd_at)
+        state.set_state(dispatcher[data_type]["state_field"], pg_producer.last_upd_at)
 
-    logging.info("Выгрузка person завершена")
-
-
-def genres_producer(
-    pg_connection: PostgresConnection,
-    elastic_requester: ElasticRequester,
-    state: State,
-    limit: int,
-):
-    """
-    Выгрузка таблицы genre
-    """
-    logging.info("Запуск выгрузки genre")
-    # Логика работы функции аналогична persons_producer. Различаются только sql запросы.
-    updated_at = state.get_state("genre_upd_at")
-
-    genre_producer = Producer(
-        pg_connection,
-        sql_query=sql_queries.nested_pre_sql("genre"),
-        sql_values={"updated_at": updated_at, "limit": limit},
-        offset_by="updated_at",
-        produce_field="id",
-    )
-    genre_enricher = Enricher(
-        pg_connection,
-        producer=genre_producer,
-        sql_query=sql_queries.nested_fw_ids_sql("genre_film_work", "genre_id"),
-        sql_values={"offset": 0, "limit": limit},
-        enrich_by="data_ids",
-        produce_field="id",
-    )
-    genre_merger = Merger(
-        pg_connection,
-        genre_enricher,
-        sql_query=sql_queries.fw_genres_sql_query(),
-        sql_values={},
-        produce_by="filmwork_ids",
-        set_limit=100,
-        data_class=FilmWorkGenres,
-    )
-
-    for gfw_objects in genre_merger.generator():
-
-        elastic_requester.prepare_bulk(gfw_objects, "update", "fw_id", upsert=True)
-        res = elastic_requester.make_bulk_request(to_index="movies")
-        state.set_state("genre_upd_at", genre_producer.last_upd_at)
-
-    logging.info("Выгрузка genre завершена")
+    logging.info(f"Выгрузка {data_type} завершена")
 
 
 if __name__ == "__main__":
     logging.basicConfig(level="INFO")
+    logging.info("Начало работы")
 
-    load_dotenv()
-    pg_dsl = conf.pg_database.dict()
-    pg_dsl["password"] = os.environ.get("DB_PASSWD")
-    pg_dsl["user"] = os.environ.get("DB_USER")
+    while True:
+        load_dotenv()
+        pg_dsl = conf.pg_database.dict()
+        pg_dsl["password"] = os.environ.get("DB_PASSWD")
+        pg_dsl["user"] = os.environ.get("DB_USER")
 
-    with PostgresConnection(pg_dsl) as pg_conn:
-        # with PostgresConnection(conf.pg_database.dict()) as pg_conn:
-        # Предполагается, что на момент старта скрипта необходимые index'ы уже созданы
-        esr = ElasticRequester([conf.elastic.host], port=conf.elastic.port)
+        with PostgresConnection(pg_dsl) as pg_conn:
+            # with PostgresConnection(conf.pg_database.dict()) as pg_conn:
+            # Предполагается, что на момент старта скрипта необходимые index'ы уже созданы
+            esr = ElasticRequester([conf.elastic.host], port=conf.elastic.port)
 
-        # Считывание state файла. При инициализации класса State
-        # отсутствующие необходимые параметры будут заполнены
-        # значениями по умолчанию. Подробнее см state_control.py
-        js_storage = JsonFileStorage(file_path="./state_file")
-        st = State(js_storage)
+            # Считывание state файла. При инициализации класса State
+            # отсутствующие необходимые параметры будут заполнены
+            # значениями по умолчанию. Подробнее см state_control.py
+            js_storage = JsonFileStorage(file_path="./state_file")
+            st = State(js_storage)
 
-        # Запуск сборщиков
-        fw_producer(pg_conn, esr, st, conf.sql_settings.limit)
-        persons_producer(pg_conn, esr, st, conf.sql_settings.limit)
-        genres_producer(pg_conn, esr, st, conf.sql_settings.limit)
+            # Запуск сборщиков
+            fw_producer(pg_conn, esr, st, conf.sql_settings.limit)
+            persons_or_genres_producer(
+                pg_conn, esr, st, conf.sql_settings.limit, "person"
+            )
+            persons_or_genres_producer(
+                pg_conn, esr, st, conf.sql_settings.limit, "genre"
+            )
+
+        logging.info(f"Синхронизация закончена. Переход в ждущий режим.")
+        logging.info(f"Следующая синхронизация через {conf.etl.time_interval} секунд.")
+        time.sleep(conf.etl.time_interval)

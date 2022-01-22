@@ -26,11 +26,16 @@ class BackoffConfig(BaseModel):
     max_time: int
 
 
+class EtlConfig(BaseModel):
+    time_interval: int
+
+
 class Config(BaseModel):
     pg_database: PostgresConfig
     elastic: ElasticConfig
     backoff: BackoffConfig
     sql_settings: SqlConfig
+    etl: EtlConfig
 
     @classmethod
     def parse_config(cls, file_path: str) -> Config:

@@ -13,3 +13,7 @@ port=9200
 
 [backoff]
 max_time=60
+
+[etl]
+# time interval in sec
+time_interval=300
