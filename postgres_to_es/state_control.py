@@ -9,6 +9,7 @@ class EnhancedJSONEncoder(json.JSONEncoder):
     """
     Кодировщик для dataclass
     """
+
     def default(self, obj):
         if isinstance(obj, datetime.datetime):
             return obj.isoformat()
@@ -32,7 +33,7 @@ class JsonFileStorage(BaseStorage):
         self.file_path = file_path
 
     def save_state(self, state: dict) -> None:
-        with open(self.file_path, 'w') as outfile:
+        with open(self.file_path, "w") as outfile:
             json.dump(state, outfile, cls=EnhancedJSONEncoder)
 
     def retrieve_state(self) -> dict:
@@ -56,16 +57,15 @@ class State:
         self.storage = storage
         self.data = {}
 
-        zero_time = datetime.datetime.fromisoformat('1970-01-01T00:00:00.000000+00:00')
+        zero_time = datetime.datetime.fromisoformat("1970-01-01T00:00:00.000000+00:00")
 
         self.default_values = {
-            'film_work_upd_at': zero_time,
-            'person_upd_at': zero_time,
-            'genre_upd_at': zero_time,
+            "film_work_upd_at": zero_time,
+            "person_upd_at": zero_time,
+            "genre_upd_at": zero_time,
         }
 
         self.parse_data()
-
 
     def parse_data(self):
         """
