@@ -1,3 +1,8 @@
+# Без этого подключения почему-то не работает аннотация
+# именем класса в методах, возвращающих self.
+# В данном случае - def parse_config в Config
+# Моя версия python 3.8.10
+from __future__ import annotations
 import toml
 from pydantic import BaseModel
 
@@ -28,6 +33,6 @@ class Config(BaseModel):
     sql_settings: SqlConfig
 
     @classmethod
-    def parse_config(cls, file_path):
+    def parse_config(cls, file_path: str) -> Config:
         conf = toml.load(file_path)
         return cls.parse_obj(conf)

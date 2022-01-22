@@ -15,7 +15,7 @@ class FilmWorkGenres:
     fw_id: uuid.UUID = field(default=None)
     genres: List = field(default_factory=list)
 
-    def elastic_format(self):
+    def elastic_format(self) -> dict:
         di = {}
         for model_field in fields(self):
             f_name = model_field.name
@@ -30,13 +30,13 @@ class FilmWorkGenres:
 @dataclass
 class FilmWorkPersons:
     fw_id: uuid.UUID = field(default=None)
-    director: list = field(default_factory=list)
+    director: List = field(default_factory=list)
     actors_names: List = field(default_factory=list)
     writers_names: List = field(default_factory=list)
     actors: List = field(default_factory=list)
     writers: List = field(default_factory=list)
 
-    def elastic_format(self):
+    def elastic_format(self) -> dict:
         di = {}
         for model_field in fields(self):
             f_name = model_field.name
@@ -60,7 +60,7 @@ class FilmWork:
     writers: List = field(default_factory=list)
     updated_at: datetime.datetime = field(default=None)
 
-    def elastic_format(self):
+    def elastic_format(self) -> dict:
         di = {}
         for model_field in fields(self):
             f_name = model_field.name

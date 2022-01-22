@@ -1,14 +1,22 @@
+# Без этого подключения почему-то не работает аннотация
+# именем класса в методах, возвращающих self. В данном случае:
+# def __enter__ в PostgresConnection
+# Моя версия python 3.8.10
+from __future__ import annotations
+
+import dataclasses
 import datetime
 import logging
 import os
+from typing import Optional, Iterator, List, Tuple, Any
 
 import backoff
 import psycopg2
-import psycopg2.errors as psycopg2_errors
 from dotenv import load_dotenv
 from elasticsearch import Elasticsearch, helpers
 from elasticsearch import exceptions as elastic_exceptions
 from psycopg2.extras import DictCursor
+from psycopg2.sql import SQL
 
 import sql_queries
 from config import Config
@@ -28,41 +36,41 @@ class PostgresConnection:
     Функция подключения обёрнута декоратором backoff
     """
 
-    def __init__(self, connection_opts: dict):
+    def __init__(self, connection_opts: dict) -> None:
         self.connection_opts = connection_opts
         self.connection = None
         self.cursor = None
 
-    def __enter__(self):
+    def __enter__(self) -> PostgresConnection:
         self.connect()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, *args) -> None:
         self.close()
 
     @backoff.on_exception(
         backoff.expo,
-        psycopg2_errors.OperationalError,
+        psycopg2.OperationalError,
         max_tries=5,
         max_time=conf.backoff.max_time,
     )
-    def connect(self):
+    def connect(self) -> None:
         self.connection = psycopg2.connect(
             **self.connection_opts, cursor_factory=DictCursor
         )
         self.cursor = self.connection.cursor()
-        return True
 
-    def close(self):
+
+    def close(self) -> None:
         self.connection.close()
 
-    def execute(self, sql_query, params=None):
+    def execute(self, sql_query: SQL, params: Optional[dict] = None) -> None:
         self.cursor.execute(sql_query, params or ())
 
-    def fetchall(self):
+    def fetchall(self) -> List[dict]:
         return self.cursor.fetchall()
 
-    def query(self, sql_query, params=None):
+    def query(self, sql_query: SQL, params: Optional[dict] = None) -> List[dict]:
         while True:
             try:
                 self.cursor.execute(sql_query, params or ())
@@ -98,12 +106,12 @@ class Producer:
     def __init__(
         self,
         pg_connection: PostgresConnection,
-        sql_query,
+        sql_query: SQL,
         sql_values: dict,
-        data_class=BaseRecord,
-        offset_by=None,
-        produce_field=None,
-    ):
+        data_class: Optional[dataclasses] = BaseRecord,
+        offset_by: str = None,
+        produce_field: Optional[str] = None,
+    ) -> None:
         self.pg_connection = pg_connection
         self.sql_query = sql_query
         self.sql_values = sql_values
@@ -112,7 +120,7 @@ class Producer:
         self.produce_field = produce_field
         self.last_upd_at = datetime.datetime.fromtimestamp(0)
 
-    def extract(self) -> list:
+    def extract(self) -> List[dataclasses]:
         """
         Метод, осуществляющий запрос к базе. При запросе передается sql запрос из
         атрибута класса self.sql_query и подстановочные именные значения для него из
@@ -125,7 +133,7 @@ class Producer:
         dataclasses_data = [self.data_class(**row) for row in raw_data]
         return dataclasses_data
 
-    def generator(self):
+    def generator(self) -> Iterator[list]:
         """
         Метод, описывающий логику вычитки из базы.
         Создает генератор.
@@ -156,7 +164,7 @@ class Producer:
             # и перезаписываем это значение в sql_value. Таким образом осуществляется сдвиг,
             # например, по updated_at
 
-    def update_sql_value(self, key: str, value: any):
+    def update_sql_value(self, key: str, value: any) -> None:
         """Метод для обновления значения по ключу в
         словаре, который подставляется в sql запрос"""
         self.sql_values[key] = value
@@ -175,13 +183,13 @@ class Enricher(Producer):
     запросе, передаваемом Enricher'у.
     """
 
-    def __init__(self, *args, producer: Producer, enrich_by: str = None, **kwargs):
+    def __init__(self, *args, producer: Producer, enrich_by: str = None, **kwargs) -> None:
         self.producer = producer
         self.enrich_by = enrich_by
         self.offset = 0
         super().__init__(*args, **kwargs)
 
-    def generator(self):
+    def generator(self) -> Iterator[list]:
         if self.sql_values.get("offset") is None:
             raise ValueError("У enricher должен быть OFFSET")
         # Итерация по генератору из Producer.
@@ -210,7 +218,7 @@ class Enricher(Producer):
             # начинать сначала.
             self.update_sql_value("offset", 0)
 
-    def move_offset(self):
+    def move_offset(self) -> None:
         """
         Функция сдвига OFFSET'а. Берёт старое значение и прибавляет к нему значение лимита.
         Изменение заносятся в словарь, который используется для подстановки значений в sql
@@ -244,24 +252,24 @@ class Merger(Producer):
         self,
         pg_connection: PostgresConnection,
         enricher: Enricher,
-        sql_query,
+        sql_query: SQL,
         sql_values: dict,
-        produce_by: str = None,
-        set_limit=100,
+        produce_by: Optional[str] = None,
+        set_limit: int = 100,
         **kwargs,
-    ):
+    ) -> None:
         self.enricher = enricher
         self.produce_by = produce_by
         self.set_limit = set_limit
         self.unique_produce_by = set()
         super().__init__(pg_connection, sql_query, sql_values, **kwargs)
 
-    def _get_result_(self):
+    def _get_result_(self) -> List[dataclasses]:
         self.update_sql_value(self.produce_by, tuple(self.unique_produce_by))
         result = self.extract()
         return result
 
-    def generator(self):
+    def generator(self) -> Iterator[list]:
         # Итерация по сборщику второго уровня
         for en in self.enricher.generator():
             # Объединение данных в множество, проверка размера множества
@@ -292,15 +300,15 @@ class ElasticRequester:
     словарь с именами полей, соотвествующими mapping'у индекса
     """
 
-    def __init__(self, ip: list, port: int):
+    def __init__(self, ip: List[str], port: int) -> None:
         self.ip = ip
         self.port = port
         self.elastic_instance = Elasticsearch(self.ip, port=self.port)
         self.bulk_request = []
 
     def prepare_bulk(
-        self, objects: list, action: str, id_key: str = "id", upsert: bool = False
-    ):
+        self, objects: List[dataclasses], action: str, id_key: Optional[str] = "id", upsert: Optional[bool] = False
+    ) -> None:
         self.bulk_request.clear()
         for obj in objects:
             elastic_doc = obj.elastic_format()
@@ -313,15 +321,15 @@ class ElasticRequester:
     @backoff.on_exception(
         backoff.expo, elastic_exceptions.ConnectionError, max_time=conf.backoff.max_time
     )
-    def make_bulk_request(self, to_index: str):
+    def make_bulk_request(self, to_index: str) -> Tuple[int, int | List[Any]]:
         if len(self.bulk_request) == 0:
             logging.error("Bulk request empty")
-            return True
+            return 0, 0
         res = helpers.bulk(self.elastic_instance, self.bulk_request, index=to_index)
         return res
 
 
-def fw_producer(pg_connection, elastic_requester, state, limit):
+def fw_producer(pg_connection: PostgresConnection, elastic_requester: ElasticRequester, state: State, limit: int):
     """
     Выгрузка таблицы film_work
     """
@@ -354,7 +362,7 @@ def fw_producer(pg_connection, elastic_requester, state, limit):
     logging.info("Выгрузка film_work завершена")
 
 
-def persons_producer(pg_connection, elastic_requester, state, limit):
+def persons_producer(pg_connection: PostgresConnection, elastic_requester: ElasticRequester, state: State, limit: int):
     """
     Выгрузка таблицы person
     """
@@ -401,7 +409,7 @@ def persons_producer(pg_connection, elastic_requester, state, limit):
     logging.info("Выгрузка person завершена")
 
 
-def genres_producer(pg_connection, elastic_requester, state, limit):
+def genres_producer(pg_connection: PostgresConnection, elastic_requester: ElasticRequester, state: State, limit: int):
     """
     Выгрузка таблицы genre
     """
