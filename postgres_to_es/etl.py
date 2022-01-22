@@ -60,7 +60,6 @@ class PostgresConnection:
         )
         self.cursor = self.connection.cursor()
 
-
     def close(self) -> None:
         self.connection.close()
 
@@ -183,7 +182,9 @@ class Enricher(Producer):
     запросе, передаваемом Enricher'у.
     """
 
-    def __init__(self, *args, producer: Producer, enrich_by: str = None, **kwargs) -> None:
+    def __init__(
+        self, *args, producer: Producer, enrich_by: str = None, **kwargs
+    ) -> None:
         self.producer = producer
         self.enrich_by = enrich_by
         self.offset = 0
@@ -307,7 +308,11 @@ class ElasticRequester:
         self.bulk_request = []
 
     def prepare_bulk(
-        self, objects: List[dataclasses], action: str, id_key: Optional[str] = "id", upsert: Optional[bool] = False
+        self,
+        objects: List[dataclasses],
+        action: str,
+        id_key: Optional[str] = "id",
+        upsert: Optional[bool] = False,
     ) -> None:
         self.bulk_request.clear()
         for obj in objects:
@@ -329,7 +334,12 @@ class ElasticRequester:
         return res
 
 
-def fw_producer(pg_connection: PostgresConnection, elastic_requester: ElasticRequester, state: State, limit: int):
+def fw_producer(
+    pg_connection: PostgresConnection,
+    elastic_requester: ElasticRequester,
+    state: State,
+    limit: int,
+):
     """
     Выгрузка таблицы film_work
     """
@@ -362,7 +372,12 @@ def fw_producer(pg_connection: PostgresConnection, elastic_requester: ElasticReq
     logging.info("Выгрузка film_work завершена")
 
 
-def persons_producer(pg_connection: PostgresConnection, elastic_requester: ElasticRequester, state: State, limit: int):
+def persons_producer(
+    pg_connection: PostgresConnection,
+    elastic_requester: ElasticRequester,
+    state: State,
+    limit: int,
+):
     """
     Выгрузка таблицы person
     """
@@ -409,7 +424,12 @@ def persons_producer(pg_connection: PostgresConnection, elastic_requester: Elast
     logging.info("Выгрузка person завершена")
 
 
-def genres_producer(pg_connection: PostgresConnection, elastic_requester: ElasticRequester, state: State, limit: int):
+def genres_producer(
+    pg_connection: PostgresConnection,
+    elastic_requester: ElasticRequester,
+    state: State,
+    limit: int,
+):
     """
     Выгрузка таблицы genre
     """
