@@ -2,7 +2,7 @@ from psycopg2 import sql
 
 # Функции sql запросов возвращают SQL объекты с расставленными
 # в необходимых местах именными placeholder'ами
-def fw_full_sql_query():
+def fw_full_sql_query() -> sql.SQL:
     return sql.SQL(
         """
         SELECT
@@ -33,7 +33,7 @@ def fw_full_sql_query():
     )
 
 
-def fw_persons_sql_query():
+def fw_persons_sql_query() -> sql.SQL:
     return sql.SQL(
         """
     SELECT
@@ -52,7 +52,7 @@ def fw_persons_sql_query():
     ).format(filmwork_ids=(sql.Placeholder(name="filmwork_ids")))
 
 
-def fw_genres_sql_query():
+def fw_genres_sql_query() -> sql.SQL:
     return sql.SQL(
         """
         SELECT
@@ -67,7 +67,7 @@ def fw_genres_sql_query():
     ).format(filmwork_ids=(sql.Placeholder(name="filmwork_ids")))
 
 
-def nested_pre_sql(table: str):
+def nested_pre_sql(table: str) -> sql.SQL:
     return sql.SQL(
         """
         SELECT id, updated_at
@@ -83,7 +83,7 @@ def nested_pre_sql(table: str):
     )
 
 
-def nested_fw_ids_sql(related_table: str, related_id: str):
+def nested_fw_ids_sql(related_table: str, related_id: str) -> sql.SQL:
     return sql.SQL(
         """
     SELECT fw.id, fw.updated_at

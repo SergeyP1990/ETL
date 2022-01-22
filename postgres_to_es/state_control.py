@@ -10,7 +10,7 @@ class EnhancedJSONEncoder(json.JSONEncoder):
     Кодировщик для dataclass
     """
 
-    def default(self, obj):
+    def default(self, obj: Any) -> str:
         if isinstance(obj, datetime.datetime):
             return obj.isoformat()
         return json.JSONEncoder.default(self, obj)
@@ -29,7 +29,7 @@ class BaseStorage:
 
 
 class JsonFileStorage(BaseStorage):
-    def __init__(self, file_path: Optional[str] = None):
+    def __init__(self, file_path: Optional[str] = None) -> None:
         self.file_path = file_path
 
     def save_state(self, state: dict) -> None:
@@ -53,7 +53,7 @@ class State:
     Здесь представлена реализация с сохранением состояния в файл.
     """
 
-    def __init__(self, storage: JsonFileStorage):
+    def __init__(self, storage: JsonFileStorage) -> None:
         self.storage = storage
         self.data = {}
 
@@ -67,7 +67,7 @@ class State:
 
         self.parse_data()
 
-    def parse_data(self):
+    def parse_data(self) -> None:
         """
         Функция проверки значений state файла. Валидация происходит на основе
         словаря со значениями по умолчанию. Если по какой-то причине необходимых
