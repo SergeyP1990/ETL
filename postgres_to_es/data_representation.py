@@ -19,12 +19,13 @@ class FilmWorkGenres:
         di = {}
         for model_field in fields(self):
             f_name = model_field.name
-            if f_name == 'fw_id':
+            if f_name == "fw_id":
                 continue
-            if f_name == 'genres':
-                f_name = 'genre'
+            if f_name == "genres":
+                f_name = "genre"
             di[f_name] = getattr(self, model_field.name)
         return di
+
 
 @dataclass
 class FilmWorkPersons:
@@ -39,7 +40,7 @@ class FilmWorkPersons:
         di = {}
         for model_field in fields(self):
             f_name = model_field.name
-            if f_name == 'fw_id':
+            if f_name == "fw_id":
                 continue
             di[f_name] = getattr(self, model_field.name)
         return di
@@ -63,12 +64,11 @@ class FilmWork:
         di = {}
         for model_field in fields(self):
             f_name = model_field.name
-            if f_name == 'genres':
-                f_name = 'genre'
-            if f_name == 'fw_id':
-                f_name = 'id'
-            if f_name == 'updated_at':
+            if f_name == "genres":
+                f_name = "genre"
+            if f_name == "fw_id":
+                f_name = "id"
+            if f_name == "updated_at":
                 continue
             di[f_name] = getattr(self, model_field.name)
         return di
-
