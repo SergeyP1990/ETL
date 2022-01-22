@@ -27,11 +27,15 @@ def fw_full_sql_query():
         ORDER BY fw.updated_at
         LIMIT {sql_limit};
         """
-    ).format(updated_at=sql.Placeholder(name="updated_at"), sql_limit=sql.Placeholder(name="sql_limit"))
+    ).format(
+        updated_at=sql.Placeholder(name="updated_at"),
+        sql_limit=sql.Placeholder(name="sql_limit"),
+    )
+
 
 def fw_persons_sql_query():
     return sql.SQL(
-    """
+        """
     SELECT
         fw.id as fw_id,
         ARRAY_AGG(DISTINCT p."full_name" ) FILTER (WHERE pfw."role" = 'director') AS "director",
@@ -45,7 +49,8 @@ def fw_persons_sql_query():
     WHERE fw.id IN {filmwork_ids}
     GROUP BY fw_id;
     """
-    ).format(filmwork_ids=(sql.Placeholder(name='filmwork_ids')))
+    ).format(filmwork_ids=(sql.Placeholder(name="filmwork_ids")))
+
 
 def fw_genres_sql_query():
     return sql.SQL(
@@ -59,7 +64,8 @@ def fw_genres_sql_query():
         WHERE fw.id IN {filmwork_ids}
         GROUP BY fw_id;
         """
-    ).format(filmwork_ids=(sql.Placeholder(name='filmwork_ids')))
+    ).format(filmwork_ids=(sql.Placeholder(name="filmwork_ids")))
+
 
 def nested_pre_sql(table: str):
     return sql.SQL(
@@ -70,13 +76,16 @@ def nested_pre_sql(table: str):
         ORDER BY updated_at
         LIMIT {limit};
     """
-    ).format(table=sql.Identifier(table),
-            updated_at=sql.Placeholder(name='updated_at'),
-            limit=sql.Placeholder(name='limit'))
+    ).format(
+        table=sql.Identifier(table),
+        updated_at=sql.Placeholder(name="updated_at"),
+        limit=sql.Placeholder(name="limit"),
+    )
+
 
 def nested_fw_ids_sql(related_table: str, related_id: str):
     return sql.SQL(
-    """
+        """
     SELECT fw.id, fw.updated_at
     FROM content.film_work fw
     LEFT JOIN content.{related_table} rfw ON rfw.film_work_id = fw.id
@@ -85,9 +94,10 @@ def nested_fw_ids_sql(related_table: str, related_id: str):
     LIMIT {limit}
     OFFSET {offset}
     """
-    ).format(related_table = sql.Identifier(related_table),
-            related_id = sql.Identifier(related_id),
-            data_name_ids = sql.Placeholder(name="data_ids"),
-            offset = sql.Placeholder(name='offset'),
-            limit=sql.Placeholder(name='limit')
-            )
+    ).format(
+        related_table=sql.Identifier(related_table),
+        related_id=sql.Identifier(related_id),
+        data_name_ids=sql.Placeholder(name="data_ids"),
+        offset=sql.Placeholder(name="offset"),
+        limit=sql.Placeholder(name="limit"),
+    )

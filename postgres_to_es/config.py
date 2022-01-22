@@ -1,15 +1,16 @@
 import toml
 from pydantic import BaseModel
 
+
 class PostgresConfig(BaseModel):
     dbname: str
-    user: str
-    password: str
     host: str
     port: int
 
+
 class SqlConfig(BaseModel):
     limit: int
+
 
 class ElasticConfig(BaseModel):
     host: str
