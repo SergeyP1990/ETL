@@ -5,7 +5,7 @@ port=5433
 # no user or password here, use .env
 
 [sql_settings]
-limit=5000
+limit=10
 
 [elastic]
 host="127.0.0.1"

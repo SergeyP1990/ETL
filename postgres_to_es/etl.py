@@ -47,6 +47,7 @@ import sql_queries
 from config import Config
 from data_representation import FilmWork, BaseRecord, FilmWorkPersons, FilmWorkGenres
 from state_control import State, JsonFileStorage
+from loaders_params import LoaderSettings
 
 # Считывание конфига происходит здесь, т.к.
 # иначе не передать параметры в декоратор @backoff:
@@ -130,19 +131,11 @@ class Producer:
     def __init__(
         self,
         pg_connection: PostgresConnection,
-        sql_query: SQL,
-        sql_values: dict,
-        data_class: Optional[dataclasses] = BaseRecord,
-        offset_by: str = None,
-        produce_field: Optional[str] = None,
+        producer_setting: LoaderSettings,
     ) -> None:
         self.pg_connection = pg_connection
-        self.producer_sql_query = sql_query
-        self.producer_sql_values = sql_values
-        self.producer_data_class = data_class
-        self.producer_offset_by = offset_by
-        self.producer_produce_field = produce_field
-        self.producer_last_upd_at = datetime.datetime.fromtimestamp(0)
+        self.pr_settings = producer_setting
+        self.pr_last_upd_at = datetime.datetime.fromtimestamp(0)
 
     def extract(self) -> List[dataclasses]:
         """
@@ -153,11 +146,11 @@ class Producer:
         Возвращается список из dataclass'ов. Используется dataclass, переданный при
         инициализации класса
         """
-        raw_data = self.pg_connection.query(self.producer_sql_query, self.producer_sql_values)
-        dataclasses_data = [self.producer_data_class(**row) for row in raw_data]
+        raw_data = self.pg_connection.query(self.pr_settings.sql_query, self.pr_settings.sql_values)
+        dataclasses_data = [self.pr_settings.data_class(**row) for row in raw_data]
         return dataclasses_data
 
-    def generator(self) -> Iterator[list]:
+    def producer_generator(self) -> Iterator[list]:
         """
         Метод, описывающий логику вычитки из базы.
         Создает генератор.
@@ -175,84 +168,85 @@ class Producer:
             result = self.extract()
             if len(result) == 0:
                 break
-            self.update_sql_value(self.producer_offset_by, getattr(result[-1], self.producer_offset_by))
-            self.producer_last_upd_at = self.producer_sql_values["updated_at"]
-            if self.producer_produce_field is not None:
+            # Берём последний элемент списка объектов, забираем у него значение из offset_by,
+            # и перезаписываем это значение в sql_value. Таким образом осуществляется сдвиг,
+            # например, по updated_at
+            offset_value = getattr(result[-1], self.pr_settings.offset_by)
+            self.update_producer_sql_value(self.pr_settings.offset_by, offset_value)
+            self.pr_last_upd_at = offset_value
+            if self.pr_settings.produce_field is not None:
                 produced_by_field = [
-                    getattr(rows, self.producer_produce_field) for rows in result
+                    getattr(rows, self.pr_settings.produce_field) for rows in result
                 ]
                 yield produced_by_field
             else:
                 yield result
-            # Берём последний элемент списка объектов, забираем у него значение из offset_by,
-            # и перезаписываем это значение в sql_value. Таким образом осуществляется сдвиг,
-            # например, по updated_at
 
-    def update_sql_value(self, key: str, value: any) -> None:
+    def update_producer_sql_value(self, key: str, value: any) -> None:
         """Метод для обновления значения по ключу в
         словаре, который подставляется в sql запрос"""
-        self.producer_sql_values[key] = value
+        self.pr_settings.sql_values[key] = value
 
 
-# class Enricher(Producer):
-#     """
-#     Класс сборщик второго уровня. Наследуется от класса сборщика первого уровня.
-#     Помимо параметров родительского класса, при инициализации на вход требует:
-#     - producer: Экземпляр сборщика первого уровня (Producer);
-#     - enrich_by: Имя placeholder'а в sql запросе, в который будет подставляться результат
-#       работы сборщика первого уровня (Producer);
-#
-#     Нарезка на пачки данных в Enricher осуществляется иначе, чем в Producer.
-#     Здесь для запросов применяется OFFSET, placeholder под который обязательно должен быть в sql
-#     запросе, передаваемом Enricher'у.
-#     """
-#
-#     def __init__(
-#         self, *args, producer: Producer, enrich_by: str = None, **kwargs
-#     ) -> None:
-#         self.producer = producer
-#         self.enrich_by = enrich_by
-#         self.offset = 0
-#         super().__init__(*args, **kwargs)
-#
-#     def generator(self) -> Iterator[list]:
-#         if self.sql_values.get("offset") is None:
-#             raise ValueError("У enricher должен быть OFFSET")
-#         # Итерация по генератору из Producer.
-#         for pr in self.producer.generator():
-#             while True:
-#                 # Здесь вносится изменение в словарь с подстановками в sql запрос:
-#                 # имени placeholder'а теперь соответствует tuple со значениями,
-#                 # по которым осуществится выборка (например, подставляется в WHERE IN).
-#                 # Tuple используется, т.к. psycopg2 при подстановке в sql запрос корректно
-#                 # преобразует его в перечисленные через запятую значения.
-#                 self.update_sql_value(self.enrich_by, tuple(pr))
-#                 result = self.extract()
-#                 if len(result) == 0:
-#                     break
-#                 # Увеличение OFFSET для следующего запроса.
-#                 self.move_offset()
-#                 if self.produce_field is not None:
-#                     enriched_by_field = [
-#                         getattr(rows, self.produce_field) for rows in result
-#                     ]
-#                     yield enriched_by_field
-#                 else:
-#                     yield result
-#             # Сбор данных второго уровня по результатам пачки данных из сборщика первого уровня закончен.
-#             # Следовательно, необходимо сбросить offset, чтобы на следующей итерации сбор второго уровня
-#             # начинать сначала.
-#             self.update_sql_value("offset", 0)
-#
-#     def move_offset(self) -> None:
-#         """
-#         Функция сдвига OFFSET'а. Берёт старое значение и прибавляет к нему значение лимита.
-#         Изменение заносятся в словарь, который используется для подстановки значений в sql
-#         запрос.
-#         """
-#         new_offset = self.sql_values["offset"] + self.sql_values["limit"]
-#         self.update_sql_value("offset", new_offset)
-#         self.offset = new_offset
+class Enricher(Producer):
+    """
+    Класс сборщик второго уровня. Наследуется от класса сборщика первого уровня.
+    Помимо параметров родительского класса, при инициализации на вход требует:
+    - producer: Экземпляр сборщика первого уровня (Producer);
+    - enrich_by: Имя placeholder'а в sql запросе, в который будет подставляться результат
+      работы сборщика первого уровня (Producer);
+
+    Нарезка на пачки данных в Enricher осуществляется иначе, чем в Producer.
+    Здесь для запросов применяется OFFSET, placeholder под который обязательно должен быть в sql
+    запросе, передаваемом Enricher'у.
+    """
+
+    def __init__(
+        self, *args, producer: Producer, enrich_by: str = None, **kwargs
+    ) -> None:
+        self.producer = producer
+        self.enrich_by = enrich_by
+        self.offset = 0
+        super().__init__(*args, **kwargs)
+
+    def generator(self) -> Iterator[list]:
+        if self.sql_values.get("offset") is None:
+            raise ValueError("У enricher должен быть OFFSET")
+        # Итерация по генератору из Producer.
+        for pr in self.producer.generator():
+            while True:
+                # Здесь вносится изменение в словарь с подстановками в sql запрос:
+                # имени placeholder'а теперь соответствует tuple со значениями,
+                # по которым осуществится выборка (например, подставляется в WHERE IN).
+                # Tuple используется, т.к. psycopg2 при подстановке в sql запрос корректно
+                # преобразует его в перечисленные через запятую значения.
+                self.update_sql_value(self.enrich_by, tuple(pr))
+                result = self.extract()
+                if len(result) == 0:
+                    break
+                # Увеличение OFFSET для следующего запроса.
+                self.move_offset()
+                if self.produce_field is not None:
+                    enriched_by_field = [
+                        getattr(rows, self.produce_field) for rows in result
+                    ]
+                    yield enriched_by_field
+                else:
+                    yield result
+            # Сбор данных второго уровня по результатам пачки данных из сборщика первого уровня закончен.
+            # Следовательно, необходимо сбросить offset, чтобы на следующей итерации сбор второго уровня
+            # начинать сначала.
+            self.update_sql_value("offset", 0)
+
+    def move_offset(self) -> None:
+        """
+        Функция сдвига OFFSET'а. Берёт старое значение и прибавляет к нему значение лимита.
+        Изменение заносятся в словарь, который используется для подстановки значений в sql
+        запрос.
+        """
+        new_offset = self.sql_values["offset"] + self.sql_values["limit"]
+        self.update_sql_value("offset", new_offset)
+        self.offset = new_offset
 
 
 # class Merger(Producer):
@@ -370,29 +364,35 @@ def fw_producer(
     """
     logging.info("Запуск выгрузки film_work")
     # Считывание updated_at из state файла
-    updated_at = state.get_state("film_work_upd_at")
+    # updated_at = state.get_state("film_work_upd_at")
+    updated_at = datetime.datetime.fromtimestamp(0)
 
-    film_work_producer = Producer(
-        pg_connection,
+    producer_settings = LoaderSettings(
         sql_query=sql_queries.fw_full_sql_query(),
         sql_values={"updated_at": updated_at, "sql_limit": limit},
         data_class=FilmWork,
         offset_by="updated_at",
+        produce_field='title'
+    )
+    film_work_producer = Producer(
+        pg_connection,
+        producer_settings
     )
 
     # Итерация по данным из базы
     # Загрузчик film_work_producer возвращает для работы
     # список dataclass'ов
-    for film_work_objects in film_work_producer.generator():
-
+    for film_work_objects in film_work_producer.producer_generator():
+        print(film_work_objects)
+        # exit(0)
         # Подготовка bulk запроса. Список с dataclass'ами передаётся в
         # ElasticRequester для форматирования
-        elastic_requester.prepare_bulk(
-            film_work_objects, "update", "fw_id", upsert=True
-        )
-        res = elastic_requester.make_bulk_request(to_index="movies")
+        # elastic_requester.prepare_bulk(
+        #     film_work_objects, "update", "fw_id", upsert=True
+        # )
+        # res = elastic_requester.make_bulk_request(to_index="movies")
         # запись в state_file последнего успешно записанного значения updated_at
-        state.set_state("film_work_upd_at", film_work_producer.last_upd_at)
+        # state.set_state("film_work_upd_at", film_work_producer.last_upd_at)
 
     logging.info("Выгрузка film_work завершена")
 
@@ -478,6 +478,21 @@ if __name__ == "__main__":
     logging.basicConfig(level="INFO")
     logging.info("Начало работы")
 
+    # --------------
+
+    load_dotenv()
+
+    pg_dsl = conf.pg_database.dict()
+    pg_dsl["password"] = os.environ.get("DB_PASSWD")
+    pg_dsl["user"] = os.environ.get("DB_USER")
+    esr = ElasticRequester([conf.elastic.host], port=conf.elastic.port)
+    js_storage = JsonFileStorage(file_path="./state_file")
+    st = State(js_storage)
+
+    with PostgresConnection(pg_dsl) as pg_conn:
+        fw_producer(pg_conn, esr, st, conf.sql_settings.limit)
+    exit(0)
+    # --------------
     while True:
         load_dotenv()
         pg_dsl = conf.pg_database.dict()
@@ -496,7 +511,7 @@ if __name__ == "__main__":
             st = State(js_storage)
 
             # Запуск сборщиков
-            fw_producer(pg_conn, esr, st, conf.sql_settings.limit)
+            # fw_producer(pg_conn, esr, st, conf.sql_settings.limit)
             # persons_or_genres_producer(
             #     pg_conn, esr, st, conf.sql_settings.limit, "person"
             # )
