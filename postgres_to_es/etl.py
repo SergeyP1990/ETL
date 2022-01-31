@@ -202,41 +202,47 @@ class Enricher(Producer):
     """
 
     def __init__(
-        self, *args, producer: Producer, enrich_by: str = None, **kwargs
+        self,
+        pg_connection: PostgresConnection,
+        producer_setting: LoaderSettings,
+        enricher_setting: LoaderSettings,
+        enrich_by: str
     ) -> None:
-        self.producer = producer
+        super().__init__(pg_connection, producer_setting)
+        self.en_settings = enricher_setting
         self.enrich_by = enrich_by
         self.offset = 0
-        super().__init__(*args, **kwargs)
 
-    def generator(self) -> Iterator[list]:
-        if self.sql_values.get("offset") is None:
+    def enricher_generator(self) -> Iterator[list]:
+        if self.en_settings.sql_values.get("offset") is None:
             raise ValueError("У enricher должен быть OFFSET")
         # Итерация по генератору из Producer.
-        for pr in self.producer.generator():
+        for pr in self.producer_generator():
             while True:
                 # Здесь вносится изменение в словарь с подстановками в sql запрос:
                 # имени placeholder'а теперь соответствует tuple со значениями,
                 # по которым осуществится выборка (например, подставляется в WHERE IN).
                 # Tuple используется, т.к. psycopg2 при подстановке в sql запрос корректно
                 # преобразует его в перечисленные через запятую значения.
-                self.update_sql_value(self.enrich_by, tuple(pr))
+                self.update_enricher_sql_value(self.enrich_by, tuple(pr))
                 result = self.extract()
                 if len(result) == 0:
                     break
                 # Увеличение OFFSET для следующего запроса.
                 self.move_offset()
-                if self.produce_field is not None:
+                print(self.en_settings.sql_values)
+                if self.en_settings.produce_field is not None:
                     enriched_by_field = [
-                        getattr(rows, self.produce_field) for rows in result
+                        getattr(rows, self.en_settings.produce_field) for rows in result
                     ]
                     yield enriched_by_field
                 else:
                     yield result
+
             # Сбор данных второго уровня по результатам пачки данных из сборщика первого уровня закончен.
             # Следовательно, необходимо сбросить offset, чтобы на следующей итерации сбор второго уровня
             # начинать сначала.
-            self.update_sql_value("offset", 0)
+            self.update_enricher_sql_value("offset", 0)
 
     def move_offset(self) -> None:
         """
@@ -244,10 +250,14 @@ class Enricher(Producer):
         Изменение заносятся в словарь, который используется для подстановки значений в sql
         запрос.
         """
-        new_offset = self.sql_values["offset"] + self.sql_values["limit"]
-        self.update_sql_value("offset", new_offset)
+        new_offset = self.en_settings.sql_values["offset"] + self.en_settings.sql_values["limit"]
+        self.update_enricher_sql_value("offset", new_offset)
         self.offset = new_offset
 
+    def update_enricher_sql_value(self, key: str, value: any) -> None:
+        """Метод для обновления значения по ключу в
+        словаре, который подставляется в sql запрос"""
+        self.en_settings.sql_values[key] = value
 
 # class Merger(Producer):
 #     """
@@ -351,6 +361,88 @@ class ElasticRequester:
             return 0, 0
         res = helpers.bulk(self.elastic_instance, self.bulk_request, index=to_index)
         return res
+
+
+def test_enricher(
+    pg_connection: PostgresConnection,
+    limit: int,
+):
+
+    dispatcher = {
+        "person": {
+            "state_field": "person_upd_at",
+            "table_name": "person",
+            "related_table": "person_film_work",
+            "related_id": "person_id",
+            "dataclass": FilmWorkPersons,
+            "sql_query": sql_queries.fw_persons_sql_query(),
+        },
+        "genre": {
+            "state_field": "genre_upd_at",
+            "table_name": "genre",
+            "related_table": "genre_film_work",
+            "related_id": "genre_id",
+            "dataclass": FilmWorkGenres,
+            "sql_query": sql_queries.fw_genres_sql_query(),
+        },
+    }
+
+    updated_at = datetime.datetime.fromtimestamp(0)
+
+    data_type = "person"
+
+#     pg_producer = Producer(
+#         pg_connection,
+#         sql_query=sql_queries.nested_pre_sql(dispatcher[data_type]["table_name"]),
+#         sql_values={"updated_at": updated_at, "limit": limit},
+#         offset_by="updated_at",
+#         produce_field="id",
+#     )
+#     pg_enricher = Enricher(
+#         pg_connection,
+#         producer=pg_producer,
+#         sql_query=sql_queries.nested_fw_ids_sql(
+#             dispatcher[data_type]["related_table"], dispatcher[data_type]["related_id"]
+#         ),
+#         sql_values={"offset": 0, "limit": limit},
+#         enrich_by="data_ids",
+#         produce_field="id",
+
+    pg_producer = LoaderSettings(
+        sql_query=sql_queries.nested_pre_sql(dispatcher[data_type]["table_name"]),
+        sql_values={"updated_at": updated_at, "limit": limit},
+        data_class=BaseRecord,
+        offset_by="updated_at",
+        produce_field="id",
+    )
+    pg_enricher = LoaderSettings(
+        sql_query=sql_queries.nested_fw_ids_sql(
+            dispatcher[data_type]["related_table"], dispatcher[data_type]["related_id"]
+        ),
+        sql_values={"offset": 0, "limit": limit},
+        data_class=BaseRecord,
+        produce_field="id"
+    )
+
+    # enrich_by="data_ids"
+    person_enricher = Enricher(pg_connection, pg_producer, pg_enricher, "data_ids")
+
+    # Итерация по данным из базы
+    # Загрузчик film_work_producer возвращает для работы
+    # список dataclass'ов
+    for film_work_objects in person_enricher.enricher_generator():
+        print(film_work_objects)
+        # exit(0)
+        # Подготовка bulk запроса. Список с dataclass'ами передаётся в
+        # ElasticRequester для форматирования
+        # elastic_requester.prepare_bulk(
+        #     film_work_objects, "update", "fw_id", upsert=True
+        # )
+        # res = elastic_requester.make_bulk_request(to_index="movies")
+        # запись в state_file последнего успешно записанного значения updated_at
+        # state.set_state("film_work_upd_at", film_work_producer.last_upd_at)
+
+    logging.info("Выгрузка film_work завершена")
 
 
 def fw_producer(
@@ -490,7 +582,8 @@ if __name__ == "__main__":
     st = State(js_storage)
 
     with PostgresConnection(pg_dsl) as pg_conn:
-        fw_producer(pg_conn, esr, st, conf.sql_settings.limit)
+        # fw_producer(pg_conn, esr, st, conf.sql_settings.limit)
+        test_enricher(pg_conn, conf.sql_settings.limit)
     exit(0)
     # --------------
     while True:
