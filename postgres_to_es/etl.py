@@ -1,7 +1,3 @@
-# Без этого подключения почему-то не работает аннотация
-# именем класса в методах, возвращающих self. В данном случае:
-# def __enter__ в PostgresConnection
-# Моя версия python 3.8.10
 from __future__ import annotations
 
 import dataclasses
