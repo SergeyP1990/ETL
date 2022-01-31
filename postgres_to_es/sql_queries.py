@@ -1,5 +1,6 @@
 from psycopg2 import sql
 
+
 # Функции sql запросов возвращают SQL объекты с расставленными
 # в необходимых местах именными placeholder'ами
 def fw_full_sql_query() -> sql.SQL:

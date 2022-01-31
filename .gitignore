@@ -90,3 +90,5 @@ local_settings.py
 .env
 db.sqlite3
 movies_admin/movies/api/v1/1.py
+thouths.xcf
+

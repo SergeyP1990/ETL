@@ -137,12 +137,12 @@ class Producer:
         produce_field: Optional[str] = None,
     ) -> None:
         self.pg_connection = pg_connection
-        self.sql_query = sql_query
-        self.sql_values = sql_values
-        self.data_class = data_class
-        self.offset_by = offset_by
-        self.produce_field = produce_field
-        self.last_upd_at = datetime.datetime.fromtimestamp(0)
+        self.producer_sql_query = sql_query
+        self.producer_sql_values = sql_values
+        self.producer_data_class = data_class
+        self.producer_offset_by = offset_by
+        self.producer_produce_field = produce_field
+        self.producer_last_upd_at = datetime.datetime.fromtimestamp(0)
 
     def extract(self) -> List[dataclasses]:
         """
@@ -153,8 +153,8 @@ class Producer:
         Возвращается список из dataclass'ов. Используется dataclass, переданный при
         инициализации класса
         """
-        raw_data = self.pg_connection.query(self.sql_query, self.sql_values)
-        dataclasses_data = [self.data_class(**row) for row in raw_data]
+        raw_data = self.pg_connection.query(self.producer_sql_query, self.producer_sql_values)
+        dataclasses_data = [self.producer_data_class(**row) for row in raw_data]
         return dataclasses_data
 
     def generator(self) -> Iterator[list]:
@@ -175,11 +175,11 @@ class Producer:
             result = self.extract()
             if len(result) == 0:
                 break
-            self.update_sql_value(self.offset_by, getattr(result[-1], self.offset_by))
-            self.last_upd_at = self.sql_values["updated_at"]
-            if self.produce_field is not None:
+            self.update_sql_value(self.producer_offset_by, getattr(result[-1], self.producer_offset_by))
+            self.producer_last_upd_at = self.producer_sql_values["updated_at"]
+            if self.producer_produce_field is not None:
                 produced_by_field = [
-                    getattr(rows, self.produce_field) for rows in result
+                    getattr(rows, self.producer_produce_field) for rows in result
                 ]
                 yield produced_by_field
             else:
@@ -191,129 +191,129 @@ class Producer:
     def update_sql_value(self, key: str, value: any) -> None:
         """Метод для обновления значения по ключу в
         словаре, который подставляется в sql запрос"""
-        self.sql_values[key] = value
+        self.producer_sql_values[key] = value
 
 
-class Enricher(Producer):
-    """
-    Класс сборщик второго уровня. Наследуется от класса сборщика первого уровня.
-    Помимо параметров родительского класса, при инициализации на вход требует:
-    - producer: Экземпляр сборщика первого уровня (Producer);
-    - enrich_by: Имя placeholder'а в sql запросе, в который будет подставляться результат
-      работы сборщика первого уровня (Producer);
+# class Enricher(Producer):
+#     """
+#     Класс сборщик второго уровня. Наследуется от класса сборщика первого уровня.
+#     Помимо параметров родительского класса, при инициализации на вход требует:
+#     - producer: Экземпляр сборщика первого уровня (Producer);
+#     - enrich_by: Имя placeholder'а в sql запросе, в который будет подставляться результат
+#       работы сборщика первого уровня (Producer);
+#
+#     Нарезка на пачки данных в Enricher осуществляется иначе, чем в Producer.
+#     Здесь для запросов применяется OFFSET, placeholder под который обязательно должен быть в sql
+#     запросе, передаваемом Enricher'у.
+#     """
+#
+#     def __init__(
+#         self, *args, producer: Producer, enrich_by: str = None, **kwargs
+#     ) -> None:
+#         self.producer = producer
+#         self.enrich_by = enrich_by
+#         self.offset = 0
+#         super().__init__(*args, **kwargs)
+#
+#     def generator(self) -> Iterator[list]:
+#         if self.sql_values.get("offset") is None:
+#             raise ValueError("У enricher должен быть OFFSET")
+#         # Итерация по генератору из Producer.
+#         for pr in self.producer.generator():
+#             while True:
+#                 # Здесь вносится изменение в словарь с подстановками в sql запрос:
+#                 # имени placeholder'а теперь соответствует tuple со значениями,
+#                 # по которым осуществится выборка (например, подставляется в WHERE IN).
+#                 # Tuple используется, т.к. psycopg2 при подстановке в sql запрос корректно
+#                 # преобразует его в перечисленные через запятую значения.
+#                 self.update_sql_value(self.enrich_by, tuple(pr))
+#                 result = self.extract()
+#                 if len(result) == 0:
+#                     break
+#                 # Увеличение OFFSET для следующего запроса.
+#                 self.move_offset()
+#                 if self.produce_field is not None:
+#                     enriched_by_field = [
+#                         getattr(rows, self.produce_field) for rows in result
+#                     ]
+#                     yield enriched_by_field
+#                 else:
+#                     yield result
+#             # Сбор данных второго уровня по результатам пачки данных из сборщика первого уровня закончен.
+#             # Следовательно, необходимо сбросить offset, чтобы на следующей итерации сбор второго уровня
+#             # начинать сначала.
+#             self.update_sql_value("offset", 0)
+#
+#     def move_offset(self) -> None:
+#         """
+#         Функция сдвига OFFSET'а. Берёт старое значение и прибавляет к нему значение лимита.
+#         Изменение заносятся в словарь, который используется для подстановки значений в sql
+#         запрос.
+#         """
+#         new_offset = self.sql_values["offset"] + self.sql_values["limit"]
+#         self.update_sql_value("offset", new_offset)
+#         self.offset = new_offset
 
-    Нарезка на пачки данных в Enricher осуществляется иначе, чем в Producer.
-    Здесь для запросов применяется OFFSET, placeholder под который обязательно должен быть в sql
-    запросе, передаваемом Enricher'у.
-    """
 
-    def __init__(
-        self, *args, producer: Producer, enrich_by: str = None, **kwargs
-    ) -> None:
-        self.producer = producer
-        self.enrich_by = enrich_by
-        self.offset = 0
-        super().__init__(*args, **kwargs)
-
-    def generator(self) -> Iterator[list]:
-        if self.sql_values.get("offset") is None:
-            raise ValueError("У enricher должен быть OFFSET")
-        # Итерация по генератору из Producer.
-        for pr in self.producer.generator():
-            while True:
-                # Здесь вносится изменение в словарь с подстановками в sql запрос:
-                # имени placeholder'а теперь соответствует tuple со значениями,
-                # по которым осуществится выборка (например, подставляется в WHERE IN).
-                # Tuple используется, т.к. psycopg2 при подстановке в sql запрос корректно
-                # преобразует его в перечисленные через запятую значения.
-                self.update_sql_value(self.enrich_by, tuple(pr))
-                result = self.extract()
-                if len(result) == 0:
-                    break
-                # Увеличение OFFSET для следующего запроса.
-                self.move_offset()
-                if self.produce_field is not None:
-                    enriched_by_field = [
-                        getattr(rows, self.produce_field) for rows in result
-                    ]
-                    yield enriched_by_field
-                else:
-                    yield result
-            # Сбор данных второго уровня по результатам пачки данных из сборщика первого уровня закончен.
-            # Следовательно, необходимо сбросить offset, чтобы на следующей итерации сбор второго уровня
-            # начинать сначала.
-            self.update_sql_value("offset", 0)
-
-    def move_offset(self) -> None:
-        """
-        Функция сдвига OFFSET'а. Берёт старое значение и прибавляет к нему значение лимита.
-        Изменение заносятся в словарь, который используется для подстановки значений в sql
-        запрос.
-        """
-        new_offset = self.sql_values["offset"] + self.sql_values["limit"]
-        self.update_sql_value("offset", new_offset)
-        self.offset = new_offset
-
-
-class Merger(Producer):
-    """
-    Класс сборщика третьего уровня. Подготавливает финальные данные.
-
-    Наследуется от класса сборщика первого уровня и при инициализации помимо родительских атрибутов требует:
-     - enricher: экземпляр класса сборщка второго уровня;
-     - produce_by: имя placeholder'а, на место которого в sql запросе будут подставляться данные,
-       собранные сборщиком второго уровня;
-     - Параметр set_limit ограничивает размер множества, по которому будут
-       собраны финальные данные (см. ниже);
-
-    Сборщик третьего уровня не выполняет запрос финальных данных сразу же после получения необходимой
-    информации от сборщика второго уровня, т.к. при m2m связях данных может быть слишком мало, что
-    увеличивает частоту запросов к базе данных. Вместо этого сборщик копит набор уникальных данных,
-    полученных от Enricher. Это осуществляется через объединение данных в set(). Когда размер set'а
-    становится равен или больше лимита set_limit, сборщик выполняет запрос к базе данных по собранным
-    данным и возвращает список результатов.
-    """
-
-    def __init__(
-        self,
-        pg_connection: PostgresConnection,
-        enricher: Enricher,
-        sql_query: SQL,
-        sql_values: dict,
-        produce_by: Optional[str] = None,
-        set_limit: int = 100,
-        **kwargs,
-    ) -> None:
-        self.enricher = enricher
-        self.produce_by = produce_by
-        self.set_limit = set_limit
-        self.unique_produce_by = set()
-        super().__init__(pg_connection, sql_query, sql_values, **kwargs)
-
-    def _get_result_(self) -> List[dataclasses]:
-        self.update_sql_value(self.produce_by, tuple(self.unique_produce_by))
-        result = self.extract()
-        return result
-
-    def generator(self) -> Iterator[list]:
-        # Итерация по сборщику второго уровня
-        for en in self.enricher.generator():
-            # Объединение данных в множество, проверка размера множества
-            # Если собрано меньше лимита, то начинаем следующую итерацию
-            # Если лимит превышен - подставляем данные на место placholder'а
-            self.unique_produce_by = self.unique_produce_by.union(set(en))
-            if len(self.unique_produce_by) <= self.set_limit:
-                continue
-            yield self._get_result_()
-            # Очистка множества
-            self.unique_produce_by.clear()
-
-        # Если предел множества еще не достигнут, а данные от сборщика второго уровня уже закончились,
-        # то часть данных останется не выданной. Поэтому после выхода из генератора Enricher
-        # довыдаём остаток
-        if len(self.unique_produce_by) != 0:
-            yield self._get_result_()
-            self.unique_produce_by.clear()
+# class Merger(Producer):
+#     """
+#     Класс сборщика третьего уровня. Подготавливает финальные данные.
+#
+#     Наследуется от класса сборщика первого уровня и при инициализации помимо родительских атрибутов требует:
+#      - enricher: экземпляр класса сборщка второго уровня;
+#      - produce_by: имя placeholder'а, на место которого в sql запросе будут подставляться данные,
+#        собранные сборщиком второго уровня;
+#      - Параметр set_limit ограничивает размер множества, по которому будут
+#        собраны финальные данные (см. ниже);
+#
+#     Сборщик третьего уровня не выполняет запрос финальных данных сразу же после получения необходимой
+#     информации от сборщика второго уровня, т.к. при m2m связях данных может быть слишком мало, что
+#     увеличивает частоту запросов к базе данных. Вместо этого сборщик копит набор уникальных данных,
+#     полученных от Enricher. Это осуществляется через объединение данных в set(). Когда размер set'а
+#     становится равен или больше лимита set_limit, сборщик выполняет запрос к базе данных по собранным
+#     данным и возвращает список результатов.
+#     """
+#
+#     def __init__(
+#         self,
+#         pg_connection: PostgresConnection,
+#         enricher: Enricher,
+#         sql_query: SQL,
+#         sql_values: dict,
+#         produce_by: Optional[str] = None,
+#         set_limit: int = 100,
+#         **kwargs,
+#     ) -> None:
+#         self.enricher = enricher
+#         self.produce_by = produce_by
+#         self.set_limit = set_limit
+#         self.unique_produce_by = set()
+#         super().__init__(pg_connection, sql_query, sql_values, **kwargs)
+#
+#     def _get_result_(self) -> List[dataclasses]:
+#         self.update_sql_value(self.produce_by, tuple(self.unique_produce_by))
+#         result = self.extract()
+#         return result
+#
+#     def generator(self) -> Iterator[list]:
+#         # Итерация по сборщику второго уровня
+#         for en in self.enricher.generator():
+#             # Объединение данных в множество, проверка размера множества
+#             # Если собрано меньше лимита, то начинаем следующую итерацию
+#             # Если лимит превышен - подставляем данные на место placholder'а
+#             self.unique_produce_by = self.unique_produce_by.union(set(en))
+#             if len(self.unique_produce_by) <= self.set_limit:
+#                 continue
+#             yield self._get_result_()
+#             # Очистка множества
+#             self.unique_produce_by.clear()
+#
+#         # Если предел множества еще не достигнут, а данные от сборщика второго уровня уже закончились,
+#         # то часть данных останется не выданной. Поэтому после выхода из генератора Enricher
+#         # довыдаём остаток
+#         if len(self.unique_produce_by) != 0:
+#             yield self._get_result_()
+#             self.unique_produce_by.clear()
 
 
 class ElasticRequester:
@@ -397,81 +397,81 @@ def fw_producer(
     logging.info("Выгрузка film_work завершена")
 
 
-def persons_or_genres_producer(
-    pg_connection: PostgresConnection,
-    elastic_requester: ElasticRequester,
-    state: State,
-    limit: int,
-    data_type: str,
-):
-    """
-    Выгрузка таблицы person\genre
-    """
-    dispatcher = {
-        "person": {
-            "state_field": "person_upd_at",
-            "table_name": "person",
-            "related_table": "person_film_work",
-            "related_id": "person_id",
-            "dataclass": FilmWorkPersons,
-            "sql_query": sql_queries.fw_persons_sql_query(),
-        },
-        "genre": {
-            "state_field": "genre_upd_at",
-            "table_name": "genre",
-            "related_table": "genre_film_work",
-            "related_id": "genre_id",
-            "dataclass": FilmWorkGenres,
-            "sql_query": sql_queries.fw_genres_sql_query(),
-        },
-    }
-    if dispatcher.get(data_type) is None:
-        raise ValueError(
-            f"Неизвестный тип данных в запросе! Может быть только: {dispatcher.keys()}"
-        )
-
-    logging.info(f"Запуск выгрузки {data_type}")
-    updated_at = state.get_state(dispatcher[data_type]["state_field"])
-
-    # Здесь создаются загрузчики трех уровней как в архитектуре ETL: producer, enricher, merger
-    # для каждого загрузчика - свой sql запрос
-    pg_producer = Producer(
-        pg_connection,
-        sql_query=sql_queries.nested_pre_sql(dispatcher[data_type]["table_name"]),
-        sql_values={"updated_at": updated_at, "limit": limit},
-        offset_by="updated_at",
-        produce_field="id",
-    )
-    pg_enricher = Enricher(
-        pg_connection,
-        producer=pg_producer,
-        sql_query=sql_queries.nested_fw_ids_sql(
-            dispatcher[data_type]["related_table"], dispatcher[data_type]["related_id"]
-        ),
-        sql_values={"offset": 0, "limit": limit},
-        enrich_by="data_ids",
-        produce_field="id",
-    )
-    pg_merger = Merger(
-        pg_connection,
-        pg_enricher,
-        sql_query=dispatcher[data_type]["sql_query"],
-        sql_values={},
-        produce_by="filmwork_ids",
-        set_limit=100,
-        data_class=dispatcher[data_type]["dataclass"],
-    )
-
-    # В результате работы этого загрузчика, в ES отправляются только персоны\жанры, остальные данные
-    # по фильму не загружаются. Если фильма не было на момент создания, то он будет создан по id, благодаря upsert,
-    # но вся остальная информация в него попадёт только на момент работы функции fw_producer (которая была выше)
-    for pgfw_objects in pg_merger.generator():
-
-        elastic_requester.prepare_bulk(pgfw_objects, "update", "fw_id", upsert=True)
-        res = elastic_requester.make_bulk_request(to_index="movies")
-        state.set_state(dispatcher[data_type]["state_field"], pg_producer.last_upd_at)
-
-    logging.info(f"Выгрузка {data_type} завершена")
+# def persons_or_genres_producer(
+#     pg_connection: PostgresConnection,
+#     elastic_requester: ElasticRequester,
+#     state: State,
+#     limit: int,
+#     data_type: str,
+# ):
+#     """
+#     Выгрузка таблицы person\genre
+#     """
+#     dispatcher = {
+#         "person": {
+#             "state_field": "person_upd_at",
+#             "table_name": "person",
+#             "related_table": "person_film_work",
+#             "related_id": "person_id",
+#             "dataclass": FilmWorkPersons,
+#             "sql_query": sql_queries.fw_persons_sql_query(),
+#         },
+#         "genre": {
+#             "state_field": "genre_upd_at",
+#             "table_name": "genre",
+#             "related_table": "genre_film_work",
+#             "related_id": "genre_id",
+#             "dataclass": FilmWorkGenres,
+#             "sql_query": sql_queries.fw_genres_sql_query(),
+#         },
+#     }
+#     if dispatcher.get(data_type) is None:
+#         raise ValueError(
+#             f"Неизвестный тип данных в запросе! Может быть только: {dispatcher.keys()}"
+#         )
+#
+#     logging.info(f"Запуск выгрузки {data_type}")
+#     updated_at = state.get_state(dispatcher[data_type]["state_field"])
+#
+#     # Здесь создаются загрузчики трех уровней как в архитектуре ETL: producer, enricher, merger
+#     # для каждого загрузчика - свой sql запрос
+#     pg_producer = Producer(
+#         pg_connection,
+#         sql_query=sql_queries.nested_pre_sql(dispatcher[data_type]["table_name"]),
+#         sql_values={"updated_at": updated_at, "limit": limit},
+#         offset_by="updated_at",
+#         produce_field="id",
+#     )
+#     pg_enricher = Enricher(
+#         pg_connection,
+#         producer=pg_producer,
+#         sql_query=sql_queries.nested_fw_ids_sql(
+#             dispatcher[data_type]["related_table"], dispatcher[data_type]["related_id"]
+#         ),
+#         sql_values={"offset": 0, "limit": limit},
+#         enrich_by="data_ids",
+#         produce_field="id",
+#     )
+#     pg_merger = Merger(
+#         pg_connection,
+#         pg_enricher,
+#         sql_query=dispatcher[data_type]["sql_query"],
+#         sql_values={},
+#         produce_by="filmwork_ids",
+#         set_limit=100,
+#         data_class=dispatcher[data_type]["dataclass"],
+#     )
+#
+#     # В результате работы этого загрузчика, в ES отправляются только персоны\жанры, остальные данные
+#     # по фильму не загружаются. Если фильма не было на момент создания, то он будет создан по id, благодаря upsert,
+#     # но вся остальная информация в него попадёт только на момент работы функции fw_producer (которая была выше)
+#     for pgfw_objects in pg_merger.generator():
+#
+#         elastic_requester.prepare_bulk(pgfw_objects, "update", "fw_id", upsert=True)
+#         res = elastic_requester.make_bulk_request(to_index="movies")
+#         state.set_state(dispatcher[data_type]["state_field"], pg_producer.last_upd_at)
+#
+#     logging.info(f"Выгрузка {data_type} завершена")
 
 
 if __name__ == "__main__":
@@ -497,12 +497,12 @@ if __name__ == "__main__":
 
             # Запуск сборщиков
             fw_producer(pg_conn, esr, st, conf.sql_settings.limit)
-            persons_or_genres_producer(
-                pg_conn, esr, st, conf.sql_settings.limit, "person"
-            )
-            persons_or_genres_producer(
-                pg_conn, esr, st, conf.sql_settings.limit, "genre"
-            )
+            # persons_or_genres_producer(
+            #     pg_conn, esr, st, conf.sql_settings.limit, "person"
+            # )
+            # persons_or_genres_producer(
+            #     pg_conn, esr, st, conf.sql_settings.limit, "genre"
+            # )
 
         logging.info(f"Синхронизация закончена. Переход в ждущий режим.")
         logging.info(f"Следующая синхронизация через {conf.etl.time_interval} секунд.")
