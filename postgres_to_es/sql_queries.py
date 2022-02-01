@@ -68,6 +68,23 @@ def fw_genres_sql_query() -> sql.SQL:
     ).format(filmwork_ids=(sql.Placeholder(name="filmwork_ids")))
 
 
+def person_sql() -> sql.SQL:
+    return sql.SQL(
+        """
+        SELECT id, updated_at,
+        JSON_AGG(DISTINCT jsonb_build_object('id', p.id, 'name', p.full_name)) FILTER (WHERE pfw.role = 'actor') AS actors
+        FROM content.person
+        LEFT JOIN content.person_film_work pfw ON pfw.film_work_id = fw.id
+        WHERE updated_at > {updated_at}
+        ORDER BY updated_at
+        LIMIT {limit};
+        """
+    ).format(
+        updated_at=sql.Placeholder(name="updated_at"),
+        limit=sql.Placeholder(name="limit"),
+    )
+
+
 def nested_pre_sql(table: str) -> sql.SQL:
     return sql.SQL(
         """

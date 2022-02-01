@@ -421,7 +421,7 @@ def test_enricher(
         sql_values={"updated_at": updated_at, "limit": limit},
         data_class=BaseRecord,
         offset_by="updated_at",
-        produce_field="id",
+#        produce_field="id",
     )
     pg_enricher = LoaderSettings(
         sql_query=sql_queries.nested_fw_ids_sql(
@@ -443,12 +443,14 @@ def test_enricher(
     while True:
         if not end_of_persons:
             try:
-                print(next(person_enricher.generator()))
+                ps1 = set(next(person_enricher.generator()))
+                s = s.union(ps1)
             except StopIteration:
                 end_of_persons = True
         if not end_of_fw:
             try:
-                print(next(film_work_producer.generator()))
+                ps2 = set(next(film_work_producer.generator()))
+                s = s.union(ps2)
             except StopIteration:
                 end_of_fw = True
         if end_of_fw and end_of_persons:
