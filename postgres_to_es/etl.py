@@ -134,8 +134,9 @@ class Producer:
         producer_setting: LoaderSettings,
     ) -> None:
         self.pg_connection = pg_connection
-        self.pr_settings = producer_setting
+        self.settings = producer_setting
         self.pr_last_upd_at = datetime.datetime.fromtimestamp(0)
+        self.offset = None
 
     def extract(self) -> List[dataclasses]:
         """
@@ -146,11 +147,11 @@ class Producer:
         Возвращается список из dataclass'ов. Используется dataclass, переданный при
         инициализации класса
         """
-        raw_data = self.pg_connection.query(self.pr_settings.sql_query, self.pr_settings.sql_values)
-        dataclasses_data = [self.pr_settings.data_class(**row) for row in raw_data]
+        raw_data = self.pg_connection.query(self.settings.sql_query, self.settings.sql_values)
+        dataclasses_data = [self.settings.data_class(**row) for row in raw_data]
         return dataclasses_data
 
-    def producer_generator(self) -> Iterator[list]:
+    def generator(self) -> Iterator[list]:
         """
         Метод, описывающий логику вычитки из базы.
         Создает генератор.
@@ -171,21 +172,21 @@ class Producer:
             # Берём последний элемент списка объектов, забираем у него значение из offset_by,
             # и перезаписываем это значение в sql_value. Таким образом осуществляется сдвиг,
             # например, по updated_at
-            offset_value = getattr(result[-1], self.pr_settings.offset_by)
-            self.update_producer_sql_value(self.pr_settings.offset_by, offset_value)
+            offset_value = getattr(result[-1], self.settings.offset_by)
+            self.update_sql_value(self.settings.offset_by, offset_value)
             self.pr_last_upd_at = offset_value
-            if self.pr_settings.produce_field is not None:
+            if self.settings.produce_field is not None:
                 produced_by_field = [
-                    getattr(rows, self.pr_settings.produce_field) for rows in result
+                    getattr(rows, self.settings.produce_field) for rows in result
                 ]
                 yield produced_by_field
             else:
                 yield result
 
-    def update_producer_sql_value(self, key: str, value: any) -> None:
+    def update_sql_value(self, key: str, value: any) -> None:
         """Метод для обновления значения по ключу в
         словаре, который подставляется в sql запрос"""
-        self.pr_settings.sql_values[key] = value
+        self.settings.sql_values[key] = value
 
 
 class Enricher(Producer):
@@ -201,39 +202,36 @@ class Enricher(Producer):
     запросе, передаваемом Enricher'у.
     """
 
-    def __init__(
-        self,
-        pg_connection: PostgresConnection,
-        producer_setting: LoaderSettings,
-        enricher_setting: LoaderSettings,
-        enrich_by: str
-    ) -> None:
-        super().__init__(pg_connection, producer_setting)
-        self.en_settings = enricher_setting
+    def __init__(self,
+                 pg_connection: PostgresConnection,
+                 producer_setting: LoaderSettings,
+                 enricher_setting: LoaderSettings,
+                 enrich_by: str) -> None:
+        super().__init__(pg_connection, enricher_setting)
         self.enrich_by = enrich_by
         self.offset = 0
+        self.producer = Producer(self.pg_connection, producer_setting)
 
-    def enricher_generator(self) -> Iterator[list]:
-        if self.en_settings.sql_values.get("offset") is None:
+    def generator(self) -> Iterator[list]:
+        if self.settings.sql_values.get("offset") is None:
             raise ValueError("У enricher должен быть OFFSET")
         # Итерация по генератору из Producer.
-        for pr in self.producer_generator():
+        for pr in self.producer.generator():
             while True:
                 # Здесь вносится изменение в словарь с подстановками в sql запрос:
                 # имени placeholder'а теперь соответствует tuple со значениями,
                 # по которым осуществится выборка (например, подставляется в WHERE IN).
                 # Tuple используется, т.к. psycopg2 при подстановке в sql запрос корректно
                 # преобразует его в перечисленные через запятую значения.
-                self.update_enricher_sql_value(self.enrich_by, tuple(pr))
+                self.update_sql_value(self.enrich_by, tuple(pr))
                 result = self.extract()
                 if len(result) == 0:
                     break
                 # Увеличение OFFSET для следующего запроса.
                 self.move_offset()
-                print(self.en_settings.sql_values)
-                if self.en_settings.produce_field is not None:
+                if self.settings.produce_field is not None:
                     enriched_by_field = [
-                        getattr(rows, self.en_settings.produce_field) for rows in result
+                        getattr(rows, self.settings.produce_field) for rows in result
                     ]
                     yield enriched_by_field
                 else:
@@ -242,7 +240,7 @@ class Enricher(Producer):
             # Сбор данных второго уровня по результатам пачки данных из сборщика первого уровня закончен.
             # Следовательно, необходимо сбросить offset, чтобы на следующей итерации сбор второго уровня
             # начинать сначала.
-            self.update_enricher_sql_value("offset", 0)
+            self.update_sql_value("offset", 0)
 
     def move_offset(self) -> None:
         """
@@ -250,14 +248,11 @@ class Enricher(Producer):
         Изменение заносятся в словарь, который используется для подстановки значений в sql
         запрос.
         """
-        new_offset = self.en_settings.sql_values["offset"] + self.en_settings.sql_values["limit"]
-        self.update_enricher_sql_value("offset", new_offset)
+        new_offset = self.settings.sql_values["offset"] + self.settings.sql_values["limit"]
+        self.update_sql_value("offset", new_offset)
         self.offset = new_offset
 
-    def update_enricher_sql_value(self, key: str, value: any) -> None:
-        """Метод для обновления значения по ключу в
-        словаре, который подставляется в sql запрос"""
-        self.en_settings.sql_values[key] = value
+
 
 # class Merger(Producer):
 #     """
@@ -408,6 +403,19 @@ def test_enricher(
 #         enrich_by="data_ids",
 #         produce_field="id",
 
+    fw_producer_settings = LoaderSettings(
+        sql_query=sql_queries.fw_full_sql_query(),
+        sql_values={"updated_at": updated_at, "sql_limit": limit},
+        data_class=FilmWork,
+        offset_by="updated_at",
+        produce_field='fw_id'
+    )
+
+    film_work_producer = Producer(
+        pg_connection,
+        fw_producer_settings
+    )
+
     pg_producer = LoaderSettings(
         sql_query=sql_queries.nested_pre_sql(dispatcher[data_type]["table_name"]),
         sql_values={"updated_at": updated_at, "limit": limit},
@@ -430,8 +438,28 @@ def test_enricher(
     # Итерация по данным из базы
     # Загрузчик film_work_producer возвращает для работы
     # список dataclass'ов
-    for film_work_objects in person_enricher.enricher_generator():
-        print(film_work_objects)
+    s = set()
+    end_of_persons, end_of_fw = False, False
+    while True:
+        if not end_of_persons:
+            try:
+                print(next(person_enricher.generator()))
+            except StopIteration:
+                end_of_persons = True
+        if not end_of_fw:
+            try:
+                print(next(film_work_producer.generator()))
+            except StopIteration:
+                end_of_fw = True
+        if end_of_fw and end_of_persons:
+            break
+
+    # for film_work_objects in person_enricher.generator():
+        # print(film_work_objects)
+        # ps = set(film_work_objects)
+        # s = s.union(ps)
+        # print(s)
+    print(f"FINAL LEN: {len(s)}")
         # exit(0)
         # Подготовка bulk запроса. Список с dataclass'ами передаётся в
         # ElasticRequester для форматирования

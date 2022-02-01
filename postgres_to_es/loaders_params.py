@@ -14,6 +14,7 @@ class LoaderSettings(BaseModel):
     offset_by: Optional[str] = Field(default=None)
     produce_field: Optional[str] = Field(default=None)
 
+
 class EnricherSettings(BaseModel):
     producer_settings: LoaderSettings
     enrich_by: str
