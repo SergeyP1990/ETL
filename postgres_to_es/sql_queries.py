@@ -68,19 +68,22 @@ def fw_genres_sql_query() -> sql.SQL:
     ).format(filmwork_ids=(sql.Placeholder(name="filmwork_ids")))
 
 
-def person_sql() -> sql.SQL:
+def nested_fw_ids_sql(related_table: str, related_id: str) -> sql.SQL:
     return sql.SQL(
         """
-        SELECT id, updated_at,
-        JSON_AGG(DISTINCT jsonb_build_object('id', p.id, 'name', p.full_name)) FILTER (WHERE pfw.role = 'actor') AS actors
-        FROM content.person
-        LEFT JOIN content.person_film_work pfw ON pfw.film_work_id = fw.id
-        WHERE updated_at > {updated_at}
-        ORDER BY updated_at
-        LIMIT {limit};
-        """
+    SELECT DISTINCT fw.id, fw.updated_at
+    FROM content.film_work fw
+    LEFT JOIN content.{related_table} rfw ON rfw.film_work_id = fw.id
+    WHERE rfw.{related_id} IN {data_name_ids}
+    ORDER BY fw.updated_at
+    LIMIT {limit}
+    OFFSET {offset}
+    """
     ).format(
-        updated_at=sql.Placeholder(name="updated_at"),
+        related_table=sql.Identifier(related_table),
+        related_id=sql.Identifier(related_id),
+        data_name_ids=sql.Placeholder(name="data_ids"),
+        offset=sql.Placeholder(name="offset"),
         limit=sql.Placeholder(name="limit"),
     )
 
@@ -101,21 +104,22 @@ def nested_pre_sql(table: str) -> sql.SQL:
     )
 
 
-def nested_fw_ids_sql(related_table: str, related_id: str) -> sql.SQL:
+def person_sql() -> sql.SQL:
     return sql.SQL(
         """
-    SELECT fw.id, fw.updated_at
-    FROM content.film_work fw
-    LEFT JOIN content.{related_table} rfw ON rfw.film_work_id = fw.id
-    WHERE rfw.{related_id} IN {data_name_ids}
-    ORDER BY fw.updated_at
-    LIMIT {limit}
-    OFFSET {offset}
-    """
+        SELECT p.id,
+               p.full_name,
+               p.updated_at,
+               JSON_AGG(DISTINCT jsonb_build_object('id', pfw.film_work_id, 'role', pfw.role) ) as "role",
+               ARRAY_AGG(DISTINCT pfw.film_work_id ) AS "film_ids"
+        FROM content.person p
+        LEFT JOIN content.person_film_work pfw ON pfw.person_id = p.id
+        WHERE updated_at > {updated_at}
+        GROUP BY p.id, p.updated_at
+        ORDER BY updated_at
+        LIMIT {limit}
+        """
     ).format(
-        related_table=sql.Identifier(related_table),
-        related_id=sql.Identifier(related_id),
-        data_name_ids=sql.Placeholder(name="data_ids"),
-        offset=sql.Placeholder(name="offset"),
-        limit=sql.Placeholder(name="limit"),
+        updated_at=sql.Placeholder(name="updated_at"),
+        limit=sql.Placeholder(name="limit")
     )

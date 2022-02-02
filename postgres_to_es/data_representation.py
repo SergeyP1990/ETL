@@ -9,6 +9,7 @@ class BaseRecord:
     id: uuid.UUID = field(default=None)
     updated_at: datetime.datetime = field(default=None)
 
+
 @dataclass
 class Person:
     id: uuid.UUID = field(default=None)
@@ -16,7 +17,6 @@ class Person:
     role: List = field(default_factory=list)
     film_ids: List = field(default_factory=list)
     updated_at: datetime.datetime = field(default=None)
-
 
 
 @dataclass

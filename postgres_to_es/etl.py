@@ -42,17 +42,25 @@ from elasticsearch import Elasticsearch, helpers
 from elasticsearch import exceptions as elastic_exceptions
 from psycopg2.extras import DictCursor
 from psycopg2.sql import SQL
+from psycopg2.extensions import adapt, register_adapter
 
 import sql_queries
 from config import Config
-from data_representation import FilmWork, BaseRecord, FilmWorkPersons, FilmWorkGenres
+from data_representation import FilmWork, BaseRecord, FilmWorkPersons, FilmWorkGenres, Person
 from state_control import State, JsonFileStorage
-from loaders_params import LoaderSettings
+from loaders_params import LoaderSettings, EnricherSettings
 
 # Считывание конфига происходит здесь, т.к.
 # иначе не передать параметры в декоратор @backoff:
 # conf должна быть глобальной для этого
 conf = Config.parse_config("./config")
+
+
+def adapt_dataclass(data_class):
+    return adapt(data_class.id)
+
+
+register_adapter(Person, adapt_dataclass)
 
 
 class PostgresConnection:
@@ -137,6 +145,7 @@ class Producer:
         self.settings = producer_setting
         self.pr_last_upd_at = datetime.datetime.fromtimestamp(0)
         self.offset = None
+        self.extracted_objects = None
 
     def extract(self) -> List[dataclasses]:
         """
@@ -149,6 +158,7 @@ class Producer:
         """
         raw_data = self.pg_connection.query(self.settings.sql_query, self.settings.sql_values)
         dataclasses_data = [self.settings.data_class(**row) for row in raw_data]
+        self.extracted_objects = dataclasses_data
         return dataclasses_data
 
     def generator(self) -> Iterator[list]:
@@ -253,66 +263,70 @@ class Enricher(Producer):
         self.offset = new_offset
 
 
+class Merger():
+    """
+    Класс сборщика третьего уровня. Подготавливает финальные данные.
 
-# class Merger(Producer):
-#     """
-#     Класс сборщика третьего уровня. Подготавливает финальные данные.
-#
-#     Наследуется от класса сборщика первого уровня и при инициализации помимо родительских атрибутов требует:
-#      - enricher: экземпляр класса сборщка второго уровня;
-#      - produce_by: имя placeholder'а, на место которого в sql запросе будут подставляться данные,
-#        собранные сборщиком второго уровня;
-#      - Параметр set_limit ограничивает размер множества, по которому будут
-#        собраны финальные данные (см. ниже);
-#
-#     Сборщик третьего уровня не выполняет запрос финальных данных сразу же после получения необходимой
-#     информации от сборщика второго уровня, т.к. при m2m связях данных может быть слишком мало, что
-#     увеличивает частоту запросов к базе данных. Вместо этого сборщик копит набор уникальных данных,
-#     полученных от Enricher. Это осуществляется через объединение данных в set(). Когда размер set'а
-#     становится равен или больше лимита set_limit, сборщик выполняет запрос к базе данных по собранным
-#     данным и возвращает список результатов.
-#     """
-#
-#     def __init__(
-#         self,
-#         pg_connection: PostgresConnection,
-#         enricher: Enricher,
-#         sql_query: SQL,
-#         sql_values: dict,
-#         produce_by: Optional[str] = None,
-#         set_limit: int = 100,
-#         **kwargs,
-#     ) -> None:
-#         self.enricher = enricher
-#         self.produce_by = produce_by
-#         self.set_limit = set_limit
-#         self.unique_produce_by = set()
-#         super().__init__(pg_connection, sql_query, sql_values, **kwargs)
-#
-#     def _get_result_(self) -> List[dataclasses]:
-#         self.update_sql_value(self.produce_by, tuple(self.unique_produce_by))
-#         result = self.extract()
-#         return result
-#
-#     def generator(self) -> Iterator[list]:
-#         # Итерация по сборщику второго уровня
-#         for en in self.enricher.generator():
-#             # Объединение данных в множество, проверка размера множества
-#             # Если собрано меньше лимита, то начинаем следующую итерацию
-#             # Если лимит превышен - подставляем данные на место placholder'а
-#             self.unique_produce_by = self.unique_produce_by.union(set(en))
-#             if len(self.unique_produce_by) <= self.set_limit:
-#                 continue
-#             yield self._get_result_()
-#             # Очистка множества
-#             self.unique_produce_by.clear()
-#
-#         # Если предел множества еще не достигнут, а данные от сборщика второго уровня уже закончились,
-#         # то часть данных останется не выданной. Поэтому после выхода из генератора Enricher
-#         # довыдаём остаток
-#         if len(self.unique_produce_by) != 0:
-#             yield self._get_result_()
-#             self.unique_produce_by.clear()
+    Наследуется от класса сборщика первого уровня и при инициализации помимо родительских атрибутов требует:
+     - enricher: экземпляр класса сборщка второго уровня;
+     - produce_by: имя placeholder'а, на место которого в sql запросе будут подставляться данные,
+       собранные сборщиком второго уровня;
+     - Параметр set_limit ограничивает размер множества, по которому будут
+       собраны финальные данные (см. ниже);
+
+    Сборщик третьего уровня не выполняет запрос финальных данных сразу же после получения необходимой
+    информации от сборщика второго уровня, т.к. при m2m связях данных может быть слишком мало, что
+    увеличивает частоту запросов к базе данных. Вместо этого сборщик копит набор уникальных данных,
+    полученных от Enricher. Это осуществляется через объединение данных в set(). Когда размер set'а
+    становится равен или больше лимита set_limit, сборщик выполняет запрос к базе данных по собранным
+    данным и возвращает список результатов.
+    """
+
+    def __init__(self,
+                 producer: Producer,
+                 enricher: Enricher
+                 ) -> None:
+
+    # def __init__(
+    #     self,
+    #     pg_connection: PostgresConnection,
+    #     enricher: Enricher,
+    #     sql_query: SQL,
+    #     sql_values: dict,
+    #     produce_by: Optional[str] = None,
+    #     set_limit: int = 100,
+    #     **kwargs,
+    # ) -> None:
+    #     self.enricher = enricher
+    #     self.produce_by = produce_by
+    #     self.set_limit = set_limit
+    #     self.unique_produce_by = set()
+    #     super().__init__(pg_connection, sql_query, sql_values, **kwargs)
+
+    def _get_result_(self) -> List[dataclasses]:
+        self.update_sql_value(self.produce_by, tuple(self.unique_produce_by))
+        result = self.extract()
+        return result
+
+    def generator(self) -> Iterator[list]:
+        # Итерация по сборщику второго уровня
+        for en in self.enricher.generator():
+            # Объединение данных в множество, проверка размера множества
+            # Если собрано меньше лимита, то начинаем следующую итерацию
+            # Если лимит превышен - подставляем данные на место placholder'а
+            self.unique_produce_by = self.unique_produce_by.union(set(en))
+            if len(self.unique_produce_by) <= self.set_limit:
+                continue
+            yield self._get_result_()
+            # Очистка множества
+            self.unique_produce_by.clear()
+
+        # Если предел множества еще не достигнут, а данные от сборщика второго уровня уже закончились,
+        # то часть данных останется не выданной. Поэтому после выхода из генератора Enricher
+        # довыдаём остаток
+        if len(self.unique_produce_by) != 0:
+            yield self._get_result_()
+            self.unique_produce_by.clear()
 
 
 class ElasticRequester:
@@ -402,6 +416,16 @@ def test_enricher(
 #         sql_values={"offset": 0, "limit": limit},
 #         enrich_by="data_ids",
 #         produce_field="id",
+#
+#     pg_merger = Merger(
+#         pg_connection,
+#         pg_enricher,
+#         sql_query=dispatcher[data_type]["sql_query"],
+#         sql_values={},
+#         produce_by="filmwork_ids",
+#         set_limit=100,
+#         data_class=dispatcher[data_type]["dataclass"],
+#     )
 
     fw_producer_settings = LoaderSettings(
         sql_query=sql_queries.fw_full_sql_query(),
@@ -417,9 +441,9 @@ def test_enricher(
     )
 
     pg_producer = LoaderSettings(
-        sql_query=sql_queries.nested_pre_sql(dispatcher[data_type]["table_name"]),
+        sql_query=sql_queries.person_sql(),
         sql_values={"updated_at": updated_at, "limit": limit},
-        data_class=BaseRecord,
+        data_class=Person,
         offset_by="updated_at",
 #        produce_field="id",
     )
@@ -432,36 +456,42 @@ def test_enricher(
         produce_field="id"
     )
 
+    # pg_enricher_settings = EnricherSettings()
+
     # enrich_by="data_ids"
     person_enricher = Enricher(pg_connection, pg_producer, pg_enricher, "data_ids")
+    # person_merger = Merger(pg_connection, pg_producer, pg_enricher,)
 
     # Итерация по данным из базы
     # Загрузчик film_work_producer возвращает для работы
     # список dataclass'ов
     s = set()
-    end_of_persons, end_of_fw = False, False
-    while True:
-        if not end_of_persons:
-            try:
-                ps1 = set(next(person_enricher.generator()))
-                s = s.union(ps1)
-            except StopIteration:
-                end_of_persons = True
-        if not end_of_fw:
-            try:
-                ps2 = set(next(film_work_producer.generator()))
-                s = s.union(ps2)
-            except StopIteration:
-                end_of_fw = True
-        if end_of_fw and end_of_persons:
-            break
+    # end_of_persons, end_of_fw = False, False
+    # while True:
+    #     if not end_of_persons:
+    #         try:
+    #             ps1 = set(next(person_enricher.generator()))
+    #             s = s.union(ps1)
+    #         except StopIteration:
+    #             end_of_persons = True
+    #     if not end_of_fw:
+    #         try:
+    #             ps2 = set(next(film_work_producer.generator()))
+    #             s = s.union(ps2)
+    #         except StopIteration:
+    #             end_of_fw = True
+    #     if end_of_fw and end_of_persons:
+    #         break
+    # print(f"FINAL LEN: {len(s)}")
 
-    # for film_work_objects in person_enricher.generator():
-        # print(film_work_objects)
-        # ps = set(film_work_objects)
-        # s = s.union(ps)
-        # print(s)
-    print(f"FINAL LEN: {len(s)}")
+    for film_work_objects in person_enricher.generator():
+        print(len(film_work_objects))
+        ps = set([i.id for i in person_enricher.producer.extracted_objects])
+        print(ps)
+        # exit(0)
+        s = s.union(ps)
+        print(len(s))
+        print(person_enricher.producer.extracted_objects)
         # exit(0)
         # Подготовка bulk запроса. Список с dataclass'ами передаётся в
         # ElasticRequester для форматирования
@@ -471,6 +501,7 @@ def test_enricher(
         # res = elastic_requester.make_bulk_request(to_index="movies")
         # запись в state_file последнего успешно записанного значения updated_at
         # state.set_state("film_work_upd_at", film_work_producer.last_upd_at)
+    print(f"FINAL LEN: {len(s)}")
 
     logging.info("Выгрузка film_work завершена")
 
