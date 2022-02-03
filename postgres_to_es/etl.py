@@ -45,7 +45,7 @@ from psycopg2.sql import SQL
 
 import sql_queries
 from config import Config
-from data_representation import FilmWork, BaseRecord, FilmWorkPersons, FilmWorkGenres
+from data_representation import FilmWork, BaseRecord, FilmWorkPersons, FilmWorkGenres, Person, Genre
 from state_control import State, JsonFileStorage
 
 # Считывание конфига происходит здесь, т.к.
@@ -473,6 +473,72 @@ def persons_or_genres_producer(
 
     logging.info(f"Выгрузка {data_type} завершена")
 
+def persons(
+    pg_connection: PostgresConnection,
+    elastic_requester: ElasticRequester,
+    state: State,
+    limit: int,
+):
+    """
+    Выгрузка таблицы persons
+    """
+    logging.info("Запуск выгрузки full_persons")
+    # Считывание updated_at из state файла
+    updated_at = state.get_state("persons_full_upd_at")
+
+    full_persons_producer = Producer(
+        pg_connection,
+        sql_query=sql_queries.person_sql(),
+        sql_values={"updated_at": updated_at, "limit": limit},
+        data_class=Person,
+        offset_by="updated_at",
+    )
+
+    for film_work_objects in full_persons_producer.generator():
+
+        elastic_requester.prepare_bulk(
+            film_work_objects, "update", "id", upsert=True
+        )
+        res = elastic_requester.make_bulk_request(to_index="person")
+        # запись в state_file последнего успешно записанного значения updated_at
+        state.set_state("film_work_upd_at", full_persons_producer.last_upd_at)
+
+    logging.info("Выгрузка full_persons завершена")
+
+
+def genres(
+    pg_connection: PostgresConnection,
+    elastic_requester: ElasticRequester,
+    state: State,
+    limit: int,
+):
+    """
+    Выгрузка таблицы genres
+    """
+    logging.info("Запуск выгрузки full_genres")
+    # Считывание updated_at из state файла
+    updated_at = state.get_state("genres_full_upd_at")
+
+    full_genres_producer = Producer(
+        pg_connection,
+        sql_query=sql_queries.genre_sql(),
+        sql_values={"updated_at": updated_at, "limit": limit},
+        data_class=Genre,
+        offset_by="updated_at",
+    )
+
+    for film_work_objects in full_genres_producer.generator():
+
+        elastic_requester.prepare_bulk(
+            film_work_objects, "update", "id", upsert=True
+        )
+        res = elastic_requester.make_bulk_request(to_index="genre")
+        # запись в state_file последнего успешно записанного значения updated_at
+        state.set_state("film_work_upd_at", full_genres_producer.last_upd_at)
+
+    logging.info("Выгрузка full_genres завершена")
+
+
 
 if __name__ == "__main__":
     logging.basicConfig(level="INFO")
@@ -503,6 +569,8 @@ if __name__ == "__main__":
             persons_or_genres_producer(
                 pg_conn, esr, st, conf.sql_settings.limit, "genre"
             )
+            persons(pg_conn, esr, st, conf.sql_settings.limit)
+            genres(pg_conn, esr, st, conf.sql_settings.limit)
 
         logging.info(f"Синхронизация закончена. Переход в ждущий режим.")
         logging.info(f"Следующая синхронизация через {conf.etl.time_interval} секунд.")

@@ -63,6 +63,8 @@ class State:
             "film_work_upd_at": zero_time,
             "person_upd_at": zero_time,
             "genre_upd_at": zero_time,
+            "genres_full_upd_at": zero_time,
+            "persons_full_upd_at": zero_time,
         }
 
         self.parse_data()

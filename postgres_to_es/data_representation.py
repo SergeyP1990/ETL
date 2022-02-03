@@ -58,6 +58,7 @@ class FilmWork:
     writers_names: List = field(default_factory=list)
     actors: List = field(default_factory=list)
     writers: List = field(default_factory=list)
+    directors: List = field(default_factory=list)
     updated_at: datetime.datetime = field(default=None)
 
     def elastic_format(self) -> dict:
@@ -68,6 +69,39 @@ class FilmWork:
                 f_name = "genre"
             if f_name == "fw_id":
                 f_name = "id"
+            if f_name == "updated_at":
+                continue
+            di[f_name] = getattr(self, model_field.name)
+        return di
+
+
+@dataclass
+class Person:
+    id: uuid.UUID = field(default=None)
+    full_name: str = field(default=None)
+    role: List = field(default_factory=list)
+    film_ids: List = field(default_factory=list)
+    updated_at: datetime.datetime = field(default=None)
+
+    def elastic_format(self) -> dict:
+        di = {}
+        for model_field in fields(self):
+            f_name = model_field.name
+            if f_name == "updated_at":
+                continue
+            di[f_name] = getattr(self, model_field.name)
+        return di
+
+@dataclass
+class Genre:
+    id: uuid.UUID = field(default=None)
+    name: str = field(default=None)
+    updated_at: datetime.datetime = field(default=None)
+
+    def elastic_format(self) -> dict:
+        di = {}
+        for model_field in fields(self):
+            f_name = model_field.name
             if f_name == "updated_at":
                 continue
             di[f_name] = getattr(self, model_field.name)
