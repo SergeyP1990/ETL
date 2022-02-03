@@ -46,7 +46,7 @@ from psycopg2.extensions import adapt, register_adapter
 
 import sql_queries
 from config import Config
-from data_representation import FilmWork, BaseRecord, FilmWorkPersons, FilmWorkGenres, Person
+from data_representation import FilmWork, BaseRecord, FilmWorkPersons, FilmWorkGenres, Person, Genre
 from state_control import State, JsonFileStorage
 from loaders_params import LoaderSettings, EnricherSettings
 
@@ -61,6 +61,8 @@ def adapt_dataclass(data_class):
 
 
 register_adapter(Person, adapt_dataclass)
+register_adapter(Genre, adapt_dataclass)
+register_adapter(BaseRecord, adapt_dataclass)
 
 
 class PostgresConnection:
@@ -107,6 +109,7 @@ class PostgresConnection:
         while True:
             try:
                 self.cursor.execute(sql_query, params or ())
+                # print(self.cursor.query.decode())
                 return self.fetchall()
             except psycopg2.OperationalError as err:
                 logging.error(f"Error connecting to postgres while query: {err}")
@@ -158,7 +161,6 @@ class Producer:
         """
         raw_data = self.pg_connection.query(self.settings.sql_query, self.settings.sql_values)
         dataclasses_data = [self.settings.data_class(**row) for row in raw_data]
-        self.extracted_objects = dataclasses_data
         return dataclasses_data
 
     def generator(self) -> Iterator[list]:
@@ -185,6 +187,7 @@ class Producer:
             offset_value = getattr(result[-1], self.settings.offset_by)
             self.update_sql_value(self.settings.offset_by, offset_value)
             self.pr_last_upd_at = offset_value
+            self.extracted_objects = result
             if self.settings.produce_field is not None:
                 produced_by_field = [
                     getattr(rows, self.settings.produce_field) for rows in result
@@ -227,6 +230,7 @@ class Enricher(Producer):
             raise ValueError("У enricher должен быть OFFSET")
         # Итерация по генератору из Producer.
         for pr in self.producer.generator():
+            self.extracted_objects = pr
             while True:
                 # Здесь вносится изменение в словарь с подстановками в sql запрос:
                 # имени placeholder'а теперь соответствует tuple со значениями,
@@ -263,7 +267,7 @@ class Enricher(Producer):
         self.offset = new_offset
 
 
-class Merger():
+class Merger(Producer):
     """
     Класс сборщика третьего уровня. Подготавливает финальные данные.
 
@@ -283,50 +287,106 @@ class Merger():
     """
 
     def __init__(self,
-                 producer: Producer,
-                 enricher: Enricher
+                 pg_connection: PostgresConnection,
+                 producer_setting: LoaderSettings,
+                 loaders: List[Producer | Enricher],
+                 produce_by: str,
+                 limit: int = 100
                  ) -> None:
+        super().__init__(pg_connection, producer_setting)
+        self.options = {}
+        self.loaders = loaders
+        self.produce_by = produce_by
+        self.limit = limit
+        self.unique_produce_by = set()
 
-    # def __init__(
-    #     self,
-    #     pg_connection: PostgresConnection,
-    #     enricher: Enricher,
-    #     sql_query: SQL,
-    #     sql_values: dict,
-    #     produce_by: Optional[str] = None,
-    #     set_limit: int = 100,
-    #     **kwargs,
-    # ) -> None:
-    #     self.enricher = enricher
-    #     self.produce_by = produce_by
-    #     self.set_limit = set_limit
-    #     self.unique_produce_by = set()
-    #     super().__init__(pg_connection, sql_query, sql_values, **kwargs)
+        for loader in self.loaders:
+            self.options[loader] = {
+                'generator': loader.generator(),
+                'end': False
+            }
+
+    # film_work_producer, person_enricher, genre_enricher
+    def iterate(self):
+        end_of_persons, end_of_genres, end_of_fw  = False, False, False
+        fwg = self.loaders[0].generator()
+        peg = self.loaders[1].generator()
+        geg = self.loaders[2].generator()
+        while True:
+            if not end_of_persons:
+                try:
+                    res1 = next(peg)
+                    # print(len(person_enricher.producer.extracted_objects))
+                    print(f"PER UPD: {self.loaders[1].extracted_objects[0].updated_at}")
+                    ps1 = set(res1)
+                    self.unique_produce_by = self.unique_produce_by.union(ps1)
+                    print(f"PER: {len(res1)}")
+                    # print(len(s))
+                except StopIteration:
+                    end_of_persons = True
+            if not end_of_genres:
+                try:
+                    res2 = next(geg)
+                    # print(len(person_enricher.producer.extracted_objects))
+                    print(f"GEN UPD: {self.loaders[2].extracted_objects[0].updated_at}")
+                    ps2 = set(res2)
+                    self.unique_produce_by = self.unique_produce_by.union(ps2)
+                    print(f"GEN: {len(res2)}")
+                    # print(len(s))
+                except StopIteration:
+                    end_of_genres = True
+            if not end_of_fw:
+                try:
+                    res3 = next(fwg)
+                    ps3 = set(res3)
+                    self.unique_produce_by = self.unique_produce_by.union(ps3)
+                except StopIteration:
+                    end_of_fw = True
+            if len(self.unique_produce_by) >= self.limit:
+                print(f"TERM LEN: {len(self.unique_produce_by)}")
+                print("TIME TO RETURN")
+                yield self._get_result_()
+                self.unique_produce_by.clear()
+            if end_of_persons and end_of_fw and end_of_genres:
+                yield self._get_result_()
+                self.unique_produce_by.clear()
+                break
+        print(f"FINAL LEN: {len(self.unique_produce_by)}")
+
+    def check_end(self):
+        c = 1
+        for loader in self.loaders:
+            if self.options[loader]['end']:
+                c = c + 1
+        if c == len(self.loaders):
+            return True
+        else:
+            return False
 
     def _get_result_(self) -> List[dataclasses]:
         self.update_sql_value(self.produce_by, tuple(self.unique_produce_by))
         result = self.extract()
         return result
-
-    def generator(self) -> Iterator[list]:
-        # Итерация по сборщику второго уровня
-        for en in self.enricher.generator():
-            # Объединение данных в множество, проверка размера множества
-            # Если собрано меньше лимита, то начинаем следующую итерацию
-            # Если лимит превышен - подставляем данные на место placholder'а
-            self.unique_produce_by = self.unique_produce_by.union(set(en))
-            if len(self.unique_produce_by) <= self.set_limit:
-                continue
-            yield self._get_result_()
-            # Очистка множества
-            self.unique_produce_by.clear()
-
-        # Если предел множества еще не достигнут, а данные от сборщика второго уровня уже закончились,
-        # то часть данных останется не выданной. Поэтому после выхода из генератора Enricher
-        # довыдаём остаток
-        if len(self.unique_produce_by) != 0:
-            yield self._get_result_()
-            self.unique_produce_by.clear()
+    #
+    # def generator(self) -> Iterator[list]:
+    #     # Итерация по сборщику второго уровня
+    #     for en in self.enricher.generator():
+    #         # Объединение данных в множество, проверка размера множества
+    #         # Если собрано меньше лимита, то начинаем следующую итерацию
+    #         # Если лимит превышен - подставляем данные на место placholder'а
+    #         self.unique_produce_by = self.unique_produce_by.union(set(en))
+    #         if len(self.unique_produce_by) <= self.set_limit:
+    #             continue
+    #         yield self._get_result_()
+    #         # Очистка множества
+    #         self.unique_produce_by.clear()
+    #
+    #     # Если предел множества еще не достигнут, а данные от сборщика второго уровня уже закончились,
+    #     # то часть данных останется не выданной. Поэтому после выхода из генератора Enricher
+    #     # довыдаём остаток
+    #     if len(self.unique_produce_by) != 0:
+    #         yield self._get_result_()
+    #         self.unique_produce_by.clear()
 
 
 class ElasticRequester:
@@ -377,62 +437,14 @@ def test_enricher(
     limit: int,
 ):
 
-    dispatcher = {
-        "person": {
-            "state_field": "person_upd_at",
-            "table_name": "person",
-            "related_table": "person_film_work",
-            "related_id": "person_id",
-            "dataclass": FilmWorkPersons,
-            "sql_query": sql_queries.fw_persons_sql_query(),
-        },
-        "genre": {
-            "state_field": "genre_upd_at",
-            "table_name": "genre",
-            "related_table": "genre_film_work",
-            "related_id": "genre_id",
-            "dataclass": FilmWorkGenres,
-            "sql_query": sql_queries.fw_genres_sql_query(),
-        },
-    }
-
     updated_at = datetime.datetime.fromtimestamp(0)
 
-    data_type = "person"
-
-#     pg_producer = Producer(
-#         pg_connection,
-#         sql_query=sql_queries.nested_pre_sql(dispatcher[data_type]["table_name"]),
-#         sql_values={"updated_at": updated_at, "limit": limit},
-#         offset_by="updated_at",
-#         produce_field="id",
-#     )
-#     pg_enricher = Enricher(
-#         pg_connection,
-#         producer=pg_producer,
-#         sql_query=sql_queries.nested_fw_ids_sql(
-#             dispatcher[data_type]["related_table"], dispatcher[data_type]["related_id"]
-#         ),
-#         sql_values={"offset": 0, "limit": limit},
-#         enrich_by="data_ids",
-#         produce_field="id",
-#
-#     pg_merger = Merger(
-#         pg_connection,
-#         pg_enricher,
-#         sql_query=dispatcher[data_type]["sql_query"],
-#         sql_values={},
-#         produce_by="filmwork_ids",
-#         set_limit=100,
-#         data_class=dispatcher[data_type]["dataclass"],
-#     )
-
     fw_producer_settings = LoaderSettings(
-        sql_query=sql_queries.fw_full_sql_query(),
+        sql_query=sql_queries.fw_ids_by_updated_at(),
         sql_values={"updated_at": updated_at, "sql_limit": limit},
-        data_class=FilmWork,
+        data_class=BaseRecord,
         offset_by="updated_at",
-        produce_field='fw_id'
+        produce_field='id'
     )
 
     film_work_producer = Producer(
@@ -440,49 +452,99 @@ def test_enricher(
         fw_producer_settings
     )
 
-    pg_producer = LoaderSettings(
+    person_producer_settings = LoaderSettings(
         sql_query=sql_queries.person_sql(),
         sql_values={"updated_at": updated_at, "limit": limit},
         data_class=Person,
         offset_by="updated_at",
 #        produce_field="id",
     )
-    pg_enricher = LoaderSettings(
-        sql_query=sql_queries.nested_fw_ids_sql(
-            dispatcher[data_type]["related_table"], dispatcher[data_type]["related_id"]
-        ),
+
+    person_enricher_settings = LoaderSettings(
+        sql_query=sql_queries.nested_fw_ids_sql("person_film_work", "person_id"),
         sql_values={"offset": 0, "limit": limit},
         data_class=BaseRecord,
         produce_field="id"
     )
 
+    person_enricher = Enricher(pg_connection, person_producer_settings, person_enricher_settings, "data_ids")
+
+    genre_producer_settings = LoaderSettings(
+        sql_query=sql_queries.genre_sql(),
+        sql_values={"updated_at": updated_at, "limit": limit},
+        data_class=Genre,
+        offset_by="updated_at",
+#        produce_field="id",
+    )
+
+    genre_enricher_settings = LoaderSettings(
+        sql_query=sql_queries.nested_fw_ids_sql("genre_film_work", "genre_id"),
+        sql_values={"offset": 0, "limit": limit},
+        data_class=BaseRecord,
+        produce_field="id"
+    )
+
+    genre_enricher = Enricher(pg_connection, genre_producer_settings, genre_enricher_settings, "data_ids")
+
+    merger_settings = LoaderSettings(
+        sql_query=sql_queries.fw_full_sql_query(),
+        sql_values={},
+        data_class=FilmWork,
+    )
+
+    merger = Merger(pg_connection, merger_settings, [film_work_producer, person_enricher, genre_enricher], 'ids')
+    gen = merger.iterate()
+    for i in gen:
+        print(i)
+
+    exit(0)
     # pg_enricher_settings = EnricherSettings()
 
     # enrich_by="data_ids"
-    person_enricher = Enricher(pg_connection, pg_producer, pg_enricher, "data_ids")
     # person_merger = Merger(pg_connection, pg_producer, pg_enricher,)
 
-    # Итерация по данным из базы
-    # Загрузчик film_work_producer возвращает для работы
-    # список dataclass'ов
+
     s = set()
-    # end_of_persons, end_of_fw = False, False
-    # while True:
-    #     if not end_of_persons:
-    #         try:
-    #             ps1 = set(next(person_enricher.generator()))
-    #             s = s.union(ps1)
-    #         except StopIteration:
-    #             end_of_persons = True
-    #     if not end_of_fw:
-    #         try:
-    #             ps2 = set(next(film_work_producer.generator()))
-    #             s = s.union(ps2)
-    #         except StopIteration:
-    #             end_of_fw = True
-    #     if end_of_fw and end_of_persons:
-    #         break
-    # print(f"FINAL LEN: {len(s)}")
+    end_of_persons, end_of_genres, end_of_fw  = False, False, False
+    fwg = film_work_producer.generator()
+    peg = person_enricher.generator()
+    geg = genre_enricher.generator()
+    while True:
+        if not end_of_persons:
+            try:
+                res1 = next(peg)
+                # print(len(person_enricher.producer.extracted_objects))
+                print(f"PER UPD: {person_enricher.extracted_objects[0].updated_at}")
+                ps1 = set(res1)
+                s = s.union(ps1)
+                print(f"PER: {len(res1)}")
+                # print(len(s))
+            except StopIteration:
+                end_of_persons = True
+        if not end_of_genres:
+            try:
+                res2 = next(geg)
+                # print(len(person_enricher.producer.extracted_objects))
+                print(f"GEN UPD: {genre_enricher.extracted_objects[0].updated_at}")
+                ps2 = set(res2)
+                s = s.union(ps2)
+                print(f"GEN: {len(res2)}")
+                # print(len(s))
+            except StopIteration:
+                end_of_genres = True
+        if not end_of_fw:
+            try:
+                res3 = next(fwg)
+                ps3 = set(res3)
+                s = s.union(ps3)
+            except StopIteration:
+                end_of_fw = True
+        if end_of_persons and end_of_fw:
+            break
+
+
+    print(f"FINAL LEN: {len(s)}")
+    exit(0)
 
     for film_work_objects in person_enricher.generator():
         print(len(film_work_objects))

@@ -7,6 +7,7 @@ from typing import List
 @dataclass
 class BaseRecord:
     id: uuid.UUID = field(default=None)
+    # fw_id: uuid.UUID = field(default=None)
     updated_at: datetime.datetime = field(default=None)
 
 
@@ -16,6 +17,13 @@ class Person:
     full_name: str = field(default=None)
     role: List = field(default_factory=list)
     film_ids: List = field(default_factory=list)
+    updated_at: datetime.datetime = field(default=None)
+
+
+@dataclass
+class Genre:
+    id: uuid.UUID = field(default=None)
+    name: str = field(default=None)
     updated_at: datetime.datetime = field(default=None)
 
 
